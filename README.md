@@ -21,11 +21,11 @@ O nome do sistema fica em `NOME_SISTEMA`, no início de `js/app.js`.
 | Tela | O que mostra |
 |---|---|
 | Entrar | login e cadastro da residência com o código do ESP32 |
-| Visão mensal | consumo, gasto e previsão do mês, meta, consumo por circuito, padrão identificado, antes × depois, medido × fatura |
-| Histórico | consumo mensal (antes e depois da instalação), diário ou por hora, perfil por hora do dia, registros mensais em CSV |
-| Equipamentos | um cartão por sensor CT com potência ao vivo, maiores picos do mês, calibração dos sensores |
-| Previsão de custo | conta prevista, consumo acumulado × previsto com margem de erro e meta, simulação de economia, dados do modelo |
-| Dispositivo ESP32 | status, sinal Wi-Fi, entrega de pacotes, últimas leituras recebidas, potência nas últimas 24 h |
+| Visão mensal | resumo do mês em uma frase (conta prevista × meta), onde a energia foi gasta, últimos meses |
+| Histórico | consumo por mês, dia ou hora; antes × depois do sistema; sistema × conta de luz; horário de pico; tabela com todos os meses em CSV |
+| Equipamentos | gasto de cada circuito no mês, se está ligado agora, momentos de maior consumo |
+| Previsão de custo | faixa provável da conta, consumo acumulado × previsão × meta, simulação de economia, como a previsão é calculada |
+| Dispositivo ESP32 | status, sinal Wi-Fi, leituras chegando ao vivo, calibração dos sensores, configuração técnica |
 | Configurações | nome, tarifa, bandeira, meta de gasto, endereço da API |
 
 ## Dados
