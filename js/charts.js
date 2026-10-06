@@ -1,6 +1,6 @@
 /*
- * Gráficos em SVG puro (linha e barras), com tooltip ao passar o mouse/tocar.
- * Cores chegam como variáveis CSS (ex.: 'var(--s1)') para seguir o tema claro/escuro.
+ * Gráficos em SVG puro (barras e linha), com tooltip ao passar o mouse/tocar.
+ * Cores chegam como variáveis CSS (ex.: 'var(--g-700)').
  */
 const Charts = (() => {
   const NS = 'http://www.w3.org/2000/svg';
@@ -11,6 +11,8 @@ const Charts = (() => {
     if (parent) parent.appendChild(e);
     return e;
   }
+  const text = (f, x, y, s, cls, anchor = 'middle', style = '') =>
+    (svgEl('text', { x, y, 'text-anchor': anchor, class: cls, style }, f.svg).textContent = s);
 
   function niceScale(max) {
     if (!(max > 0)) max = 1;
@@ -27,50 +29,46 @@ const Charts = (() => {
   function frame(container, o) {
     container.innerHTML = '';
     container.classList.add('chart');
-    if (o.legend) {
-      const lg = document.createElement('div');
-      lg.className = 'legend';
-      lg.innerHTML = o.legend
-        .map(l => `<span class="lg-item"><i class="sw ${l.kind || ''}" style="--c:${l.color}"></i>${l.name}</span>`)
-        .join('');
-      container.appendChild(lg);
-    }
     const wrap = document.createElement('div');
     wrap.className = 'chart-plot';
     container.appendChild(wrap);
     const W = Math.max(260, wrap.clientWidth);
     const H = o.height || 260;
-    const m = { l: o.marginLeft || 52, r: 14, t: 14, b: 28 };
+    const m = {
+      l: o.axis === false ? 2 : (o.marginLeft || 48),
+      r: o.marginRight || 8,
+      t: o.marker ? 30 : o.valueLabels ? 22 : 14,
+      b: o.xTitle ? 48 : 28,
+    };
     const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': o.ariaLabel || '' }, wrap);
     const tip = document.createElement('div');
     tip.className = 'chart-tip';
     tip.hidden = true;
     wrap.appendChild(tip);
-    return { svg, tip, W, H, m, iw: W - m.l - m.r, ih: H - m.t - m.b };
+    const f = { svg, tip, W, H, m, iw: W - m.l - m.r, ih: H - m.t - m.b };
+    if (o.xTitle) text(f, m.l, H - 6, o.xTitle, 'axis-title', 'start');
+    return f;
   }
 
   function yAxis(f, top, ticks, fmt) {
-    const g = svgEl('g', {}, f.svg);
     for (const t of ticks) {
       const y = f.m.t + f.ih - (t / top) * f.ih;
-      svgEl('line', { x1: f.m.l, x2: f.W - f.m.r, y1: y, y2: y, class: t === 0 ? 'baseline' : 'grid' }, g);
-      svgEl('text', { x: f.m.l - 8, y: y + 4, 'text-anchor': 'end', class: 'tick' }, g).textContent = fmt(t);
+      svgEl('line', { x1: f.m.l, x2: f.W - f.m.r, y1: y, y2: y, class: t === 0 ? 'baseline' : 'grid' }, f.svg);
+      text(f, f.m.l - 10, y + 4, fmt(t), 'tick', 'end');
     }
   }
 
-  function xLabels(f, items) {
-    const maxN = Math.max(2, Math.floor(f.iw / 46));
-    const step = Math.ceil(items.length / maxN);
-    const g = svgEl('g', {}, f.svg);
-    items.forEach((it, i) => {
-      if (i % step || !it.text) return;
-      svgEl('text', { x: it.x, y: f.H - 8, 'text-anchor': 'middle', class: 'tick' }, g).textContent = it.text;
+  function xLabels(f, xs, labels, o) {
+    const y = f.m.t + f.ih + 18;
+    if (o.xTicks) {
+      o.xTicks.forEach(i => text(f, xs(i), y, labels[i], 'tick'));
+      return;
+    }
+    const step = Math.ceil(labels.length / Math.max(2, Math.floor(f.iw / 46)));
+    labels.forEach((l, i) => {
+      if (i % step || !l) return;
+      text(f, xs(i), y, l, i === o.boldIndex ? 'tick tick-bold' : 'tick');
     });
-  }
-
-  function refLine(f, y, label) {
-    svgEl('line', { x1: f.m.l, x2: f.W - f.m.r, y1: y, y2: y, class: 'ref' }, f.svg);
-    svgEl('text', { x: f.W - f.m.r, y: y - 6, 'text-anchor': 'end', class: 'ref-label' }, f.svg).textContent = label;
   }
 
   function showTip(f, html, x, y) {
@@ -88,107 +86,58 @@ const Charts = (() => {
     return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
   }
 
-  /* o: { labels, series:[{name,color,values,dashed,area}], band:{lo,hi,color}, refLine:{value,label}, yFormat, tip(i) } */
-  function line(container, o) {
-    const f = frame(container, o);
-    const n = o.labels.length;
-    let max = 0;
-    for (const s of o.series) for (const v of s.values) if (v != null) max = Math.max(max, v);
-    if (o.band) for (const v of o.band.hi) if (v != null) max = Math.max(max, v);
-    if (o.refLine) max = Math.max(max, o.refLine.value);
-    const { top, ticks } = niceScale(max * 1.04);
-    yAxis(f, top, ticks, o.yFormat);
-    const X = i => f.m.l + (n <= 1 ? f.iw / 2 : (i / (n - 1)) * f.iw);
-    const Y = v => f.m.t + f.ih - (v / top) * f.ih;
-    xLabels(f, o.labels.map((t, i) => ({ x: X(i), text: t })));
-
-    if (o.band) {
-      const idx = o.band.hi.map((v, i) => (v != null ? i : -1)).filter(i => i >= 0);
-      if (idx.length) {
-        const d = idx.map((i, k) => `${k ? 'L' : 'M'}${X(i)},${Y(o.band.hi[i])}`).join('')
-          + idx.slice().reverse().map(i => `L${X(i)},${Y(o.band.lo[i])}`).join('') + 'Z';
-        svgEl('path', { d, class: 'band', style: `fill:${o.band.color}` }, f.svg);
-      }
-    }
-
-    for (const s of o.series) {
-      const idx = s.values.map((v, i) => (v != null ? i : -1)).filter(i => i >= 0);
-      if (!idx.length) continue;
-      const d = idx.map((i, k) => `${k ? 'L' : 'M'}${X(i).toFixed(1)},${Y(s.values[i]).toFixed(1)}`).join('');
-      if (s.area) {
-        const base = f.m.t + f.ih;
-        svgEl('path', { d: `${d}L${X(idx[idx.length - 1])},${base}L${X(idx[0])},${base}Z`, class: 'area', style: `fill:${s.color}` }, f.svg);
-      }
-      svgEl('path', { d, class: 'line' + (s.dashed ? ' dashed' : ''), style: `stroke:${s.color}` }, f.svg);
-    }
-    if (o.refLine) refLine(f, Y(o.refLine.value), o.refLine.label);
-
-    const cross = svgEl('line', { class: 'crosshair', y1: f.m.t, y2: f.m.t + f.ih, visibility: 'hidden' }, f.svg);
-    const dots = o.series.map(s => svgEl('circle', { r: 4.5, class: 'dot', style: `fill:${s.color}`, visibility: 'hidden' }, f.svg));
-    const hit = svgEl('rect', { x: f.m.l - 6, y: 0, width: f.iw + 12, height: f.H, class: 'hit' }, f.svg);
-
-    const move = ev => {
-      const rect = f.svg.getBoundingClientRect();
-      const px = ev.clientX - rect.left;
-      const i = Math.max(0, Math.min(n - 1, Math.round(((px - f.m.l) / f.iw) * (n - 1))));
-      const x = X(i);
-      cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
-      let ymin = f.m.t + f.ih;
-      o.series.forEach((s, k) => {
-        const v = s.values[i];
-        if (v == null) { dots[k].setAttribute('visibility', 'hidden'); return; }
-        const y = Y(v);
-        ymin = Math.min(ymin, y);
-        dots[k].setAttribute('cx', x); dots[k].setAttribute('cy', y); dots[k].setAttribute('visibility', 'visible');
-      });
-      showTip(f, o.tip(i), x, ymin);
-    };
-    hit.addEventListener('pointermove', move);
-    hit.addEventListener('pointerdown', move);
-    hit.addEventListener('pointerleave', () => {
-      cross.setAttribute('visibility', 'hidden');
-      dots.forEach(d => d.setAttribute('visibility', 'hidden'));
-      f.tip.hidden = true;
-    });
-  }
-
-  /* o: { labels, series:[{name,color (string ou fn(i)),values}], refLine, yFormat, tip(i) } */
+  /*
+   * o: { labels, values, color (string ou fn(i)), ghost: [total previsto ou null],
+   *      axis, valueLabels, valueFormat, marker: {index, label}, xTicks, boldIndex, yFormat, tip(i) }
+   */
   function bar(container, o) {
     const f = frame(container, o);
     const n = o.labels.length;
-    const S = o.series;
-    let max = 0;
-    S.forEach(s => s.values.forEach(v => { if (v != null) max = Math.max(max, v); }));
-    if (o.refLine) max = Math.max(max, o.refLine.value);
-    const { top, ticks } = niceScale(max * 1.04);
-    yAxis(f, top, ticks, o.yFormat);
+    const vals = o.values;
+    const ghost = o.ghost || [];
+    const max = Math.max(...vals.map(v => v || 0), ...ghost.map(v => v || 0));
+    const { top, ticks } = niceScale(max * 1.02);
     const Y = v => f.m.t + f.ih - (v / top) * f.ih;
+    const base = f.m.t + f.ih;
+    if (o.axis === false) svgEl('line', { x1: f.m.l, x2: f.W - f.m.r, y1: base, y2: base, class: 'baseline' }, f.svg);
+    else yAxis(f, top, ticks, o.yFormat);
+
     const band = f.iw / n;
-    const groupW = Math.min(band * 0.72, S.length * 36 + (S.length - 1) * 2);
-    const bw = (groupW - (S.length - 1) * 2) / S.length;
+    const bw = Math.min(band * (n > 16 ? 0.72 : 0.84), 90);
+    const xc = i => f.m.l + i * band + band / 2;
+    const vf = o.valueFormat || (v => String(Math.round(v)));
     const marks = [];
 
     for (let i = 0; i < n; i++) {
-      const gx = f.m.l + i * band + (band - groupW) / 2;
-      S.forEach((s, k) => {
-        const v = s.values[i];
-        if (v == null || v <= 0) return;
+      const x = xc(i) - bw / 2;
+      if (ghost[i] != null) {
+        const y = Y(ghost[i]);
+        svgEl('rect', { x: x + 0.5, y, width: bw - 1, height: base - y, rx: 3, class: 'ghost' }, f.svg);
+        if (o.valueLabels) text(f, xc(i), y - 7, vf(ghost[i]), 'vlabel vlabel-ghost');
+      }
+      const v = vals[i];
+      if (v > 0) {
         const y = Y(v);
-        const c = typeof s.color === 'function' ? s.color(i) : s.color;
-        const p = svgEl('path', { d: barPath(gx + k * (bw + 2), y, bw, f.m.t + f.ih - y, 4), class: 'bar', style: `fill:${c}` }, f.svg);
-        marks.push({ i, p, y });
-      });
+        const c = typeof o.color === 'function' ? o.color(i) : o.color;
+        const p = svgEl('path', { d: barPath(x, y, bw, base - y, 3), class: 'bar', style: `fill:${c}` }, f.svg);
+        marks.push({ i, p, y: ghost[i] != null ? Y(ghost[i]) : y });
+        if (o.valueLabels && ghost[i] == null) text(f, xc(i), y - 7, vf(v), 'vlabel');
+      }
     }
-    xLabels(f, o.labels.map((t, i) => ({ x: f.m.l + i * band + band / 2, text: t })));
-    if (o.refLine) refLine(f, Y(o.refLine.value), o.refLine.label);
+
+    if (o.marker) {
+      const x = f.m.l + o.marker.index * band;
+      svgEl('line', { x1: x, x2: x, y1: 6, y2: base, class: 'marker' }, f.svg);
+      text(f, x + 5, 14, o.marker.label, 'marker-label', 'start');
+    }
+    xLabels(f, xc, o.labels, o);
 
     for (let i = 0; i < n; i++) {
       const hit = svgEl('rect', { x: f.m.l + i * band, y: 0, width: band, height: f.H, class: 'hit' }, f.svg);
       const enter = () => {
-        const own = marks.filter(m => m.i === i);
         marks.forEach(m => m.p.classList.toggle('dim', m.i !== i));
-        const y = own.length ? Math.min(...own.map(m => m.y)) : f.m.t + f.ih;
-        showTip(f, o.tip(i), f.m.l + i * band + band / 2, y);
+        const own = marks.find(m => m.i === i);
+        showTip(f, o.tip(i), xc(i), own ? own.y : base);
       };
       hit.addEventListener('pointerenter', enter);
       hit.addEventListener('pointerdown', enter);
@@ -199,5 +148,63 @@ const Charts = (() => {
     }
   }
 
-  return { line, bar };
+  /*
+   * o: { labels, series:[{color, values, dashed}], band:{lo,hi,color}, refLine:{value,label,color},
+   *      points:[{i, v, color, label, dx, dy, anchor}], xTicks, xTitle, yFormat, tip(i) }
+   */
+  function line(container, o) {
+    const f = frame(container, o);
+    const n = o.labels.length;
+    let max = 0;
+    for (const s of o.series) for (const v of s.values) if (v != null) max = Math.max(max, v);
+    if (o.band) for (const v of o.band.hi) if (v != null) max = Math.max(max, v);
+    if (o.refLine) max = Math.max(max, o.refLine.value * 1.08);
+    const { top, ticks } = niceScale(max * 1.04);
+    yAxis(f, top, ticks, o.yFormat);
+    const X = i => f.m.l + 8 + (n <= 1 ? 0 : (i / (n - 1)) * (f.iw - 16));
+    const Y = v => f.m.t + f.ih - (v / top) * f.ih;
+    xLabels(f, X, o.labels, o);
+
+    if (o.band) {
+      const idx = o.band.hi.map((v, i) => (v != null ? i : -1)).filter(i => i >= 0);
+      if (idx.length) {
+        const d = idx.map((i, k) => `${k ? 'L' : 'M'}${X(i)},${Y(o.band.hi[i])}`).join('')
+          + idx.slice().reverse().map(i => `L${X(i)},${Y(o.band.lo[i])}`).join('') + 'Z';
+        svgEl('path', { d, class: 'band', style: `fill:${o.band.color}` }, f.svg);
+      }
+    }
+    if (o.refLine) {
+      const y = Y(o.refLine.value);
+      svgEl('line', { x1: f.m.l, x2: f.W - f.m.r, y1: y, y2: y, class: 'ref', style: `stroke:${o.refLine.color}` }, f.svg);
+      text(f, f.m.l + 8, y - 8, o.refLine.label, 'ref-label', 'start', `fill:${o.refLine.color}`);
+    }
+    for (const s of o.series) {
+      const idx = s.values.map((v, i) => (v != null ? i : -1)).filter(i => i >= 0);
+      if (!idx.length) continue;
+      const d = idx.map((i, k) => `${k ? 'L' : 'M'}${X(i).toFixed(1)},${Y(s.values[i]).toFixed(1)}`).join('');
+      svgEl('path', { d, class: 'line' + (s.dashed ? ' dashed' : ''), style: `stroke:${s.color}` }, f.svg);
+    }
+    for (const p of o.points || []) {
+      svgEl('circle', { cx: X(p.i), cy: Y(p.v), r: 6, class: 'point', style: `fill:${p.color}` }, f.svg);
+      if (p.label) text(f, X(p.i) + (p.dx || 0), Y(p.v) + (p.dy || 0), p.label, 'point-label', p.anchor || 'start', p.labelColor ? `fill:${p.labelColor}` : '');
+    }
+
+    const cross = svgEl('line', { class: 'crosshair', y1: f.m.t, y2: f.m.t + f.ih, visibility: 'hidden' }, f.svg);
+    const hit = svgEl('rect', { x: f.m.l, y: 0, width: f.iw, height: f.H, class: 'hit' }, f.svg);
+    const move = ev => {
+      const rect = f.svg.getBoundingClientRect();
+      const i = Math.max(0, Math.min(n - 1, Math.round(((ev.clientX - rect.left - f.m.l - 8) / (f.iw - 16)) * (n - 1))));
+      cross.setAttribute('x1', X(i)); cross.setAttribute('x2', X(i)); cross.setAttribute('visibility', 'visible');
+      const ys = o.series.map(s => s.values[i]).filter(v => v != null).map(Y);
+      showTip(f, o.tip(i), X(i), ys.length ? Math.min(...ys) : f.m.t + f.ih / 2);
+    };
+    hit.addEventListener('pointermove', move);
+    hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => {
+      cross.setAttribute('visibility', 'hidden');
+      f.tip.hidden = true;
+    });
+  }
+
+  return { bar, line };
 })();

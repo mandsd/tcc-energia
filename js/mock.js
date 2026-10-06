@@ -9,28 +9,26 @@ const Mock = (() => {
   const DATA_ADOCAO = new Date(2026, 7, 1);
 
   const DISPOSITIVOS = [
-    { id: 'chuveiro',   nome: 'Chuveiro elétrico',    canal: 'CT1', potencia_nominal_w: 5500 },
-    { id: 'ar',         nome: 'Ar-condicionado',      canal: 'CT2', potencia_nominal_w: 1200 },
-    { id: 'geladeira',  nome: 'Geladeira',            canal: 'CT3', potencia_nominal_w: 150 },
-    { id: 'lavar',      nome: 'Máquina de lavar',     canal: 'CT4', potencia_nominal_w: 500 },
-    { id: 'iluminacao', nome: 'Iluminação e tomadas', canal: 'CT5', potencia_nominal_w: 300 },
+    { id: 'chuveiro', nome: 'Chuveiro',        canal: 'CT1', gpio: 34, potencia_nominal_w: 5500 },
+    { id: 'ar',       nome: 'Ar-condicionado', canal: 'CT2', gpio: 35, potencia_nominal_w: 1200 },
+    { id: 'cozinha',  nome: 'Cozinha',         canal: 'CT3', gpio: 32, potencia_nominal_w: 1250, descricao: 'geladeira, micro-ondas' },
+    { id: 'tomadas',  nome: 'Tomadas e iluminação', canal: 'CT4', gpio: 33, potencia_nominal_w: 600 },
   ];
 
   // Sazonalidade de Brasília: seca e calor em set–out, frio em jun–jul (índice = mês 0..11).
-  const AR_HORAS    = [2.2, 2.4, 2.0, 1.6, 1.0, 0.5, 0.4, 0.8, 2.0, 3.2, 3.0, 2.4];
+  const AR_HORAS    = [1.6, 1.8, 1.5, 1.2, 0.8, 0.4, 0.3, 0.6, 1.5, 2.4, 2.2, 1.8];
   const BANHO_FATOR = [0.9, 0.9, 0.95, 1, 1.1, 1.2, 1.25, 1.15, 1, 0.95, 0.9, 0.9];
 
-  // Potência média (W) por hora do dia, usada no gráfico de 24 h e na leitura "ao vivo".
+  // Potência média (W) por hora do dia, usada no perfil horário, no gráfico de 24 h e na leitura "ao vivo".
   const PERFIL = {
-    chuveiro:   h => (h === 6 || h === 7) ? 700 : (h >= 19 && h <= 21) ? 450 : h === 12 ? 150 : 0,
-    ar:         h => (h >= 13 && h <= 17) ? 500 : (h >= 21 || h <= 1) ? 300 : 0,
-    geladeira:  () => 50,
-    lavar:      h => (h >= 9 && h <= 11) ? 100 : 0,
-    iluminacao: h => (h >= 18 && h <= 23) ? 180 : (h >= 7 && h <= 17) ? 40 : 20,
+    chuveiro: h => (h === 6 || h === 7) ? 600 : (h >= 19 && h <= 21) ? 520 : h === 12 ? 120 : 0,
+    ar:       h => (h >= 13 && h <= 17) ? 380 : (h >= 21 || h <= 1) ? 220 : 0,
+    cozinha:  h => 50 + (h === 12 || h === 19 ? 220 : h === 7 ? 110 : 0),
+    tomadas:  h => (h >= 18 && h <= 23) ? 200 : (h >= 9 && h <= 11) ? 140 : (h >= 7 && h <= 17) ? 50 : 25,
   };
 
   function rng(seed) {
-    let s = seed % 2147483647;
+    let s = Math.floor(seed) % 2147483647;
     if (s <= 0) s += 2147483646;
     return () => (s = (s * 16807) % 2147483647) / 2147483647;
   }
@@ -46,11 +44,10 @@ const Mock = (() => {
     const m = d.getMonth();
     const fds = d.getDay() === 0 || d.getDay() === 6;
     return {
-      chuveiro:   5.5 * (0.42 + r() * 0.18) * BANHO_FATOR[m] * (fds ? 1.15 : 1) * (pos ? 0.85 : 1),
-      ar:         1.2 * AR_HORAS[m] * (0.6 + r() * 0.8) * (fds ? 1.3 : 1) * (pos ? 0.84 : 1),
-      geladeira:  1.0 + r() * 0.25 + (m >= 8 && m <= 10 ? 0.15 : 0),
-      lavar:      (fds || r() < 0.15) ? 0.5 + r() * 0.4 : 0.02,
-      iluminacao: (1.6 + r() * 0.6) * (fds ? 1.2 : 1) * (pos ? 0.9 : 1),
+      chuveiro: 5.5 * (0.40 + r() * 0.16) * BANHO_FATOR[m] * (fds ? 1.15 : 1) * (pos ? 0.86 : 1),
+      ar:       1.2 * AR_HORAS[m] * (0.6 + r() * 0.8) * (fds ? 1.3 : 1) * (pos ? 0.85 : 1),
+      cozinha:  1.1 + r() * 0.25 + (m >= 8 && m <= 10 ? 0.15 : 0) + 0.1 + r() * 0.15,
+      tomadas:  (1.5 + r() * 0.5) * (fds ? 1.2 : 1) * (pos ? 0.9 : 1) + ((fds || r() < 0.15) ? 0.5 + r() * 0.4 : 0),
     };
   }
 
@@ -84,8 +81,14 @@ const Mock = (() => {
     const por = {};
     for (const d of DISPOSITIVOS) {
       const media = PERFIL[d.id](h);
-      if (d.id === 'iluminacao') { por[d.id] = Math.round(media * (0.85 + Math.random() * 0.3)); continue; }
-      const pLigado = d.id === 'geladeira' ? 0.35 : Math.min(0.95, media / d.potencia_nominal_w);
+      if (d.id === 'tomadas') { por[d.id] = Math.round(media * (0.85 + Math.random() * 0.3)); continue; }
+      if (d.id === 'cozinha') {
+        if (estado.geladeira === undefined || Math.random() < 0.12) estado.geladeira = Math.random() < 0.35;
+        const microondas = media > 100 && Math.random() < 0.3 ? 1100 : 0;
+        por[d.id] = Math.round((estado.geladeira ? 150 : 0) + microondas);
+        continue;
+      }
+      const pLigado = Math.min(0.95, media / d.potencia_nominal_w);
       if (estado[d.id] === undefined || Math.random() < 0.12) estado[d.id] = Math.random() < pLigado;
       por[d.id] = estado[d.id] ? Math.round(d.potencia_nominal_w * (0.93 + Math.random() * 0.1)) : 0;
     }
@@ -128,7 +131,7 @@ const Mock = (() => {
       const completo = mes !== monthKey(hoje);
       const comSistema = new Date(y, mm - 1, 1) >= DATA_ADOCAO;
       // Leitura do medidor da concessionária: difere um pouco do que os sensores CT registram.
-      const fatura = kwh * (1 + (r() - 0.5) * 0.05);
+      const fatura = kwh * (1 + 0.01 + r() * 0.025);
       return {
         mes,
         completo,
@@ -137,6 +140,73 @@ const Mock = (() => {
         kwh_fatura: completo ? Math.round(fatura) : null,
       };
     });
+  }
+
+  // Média de consumo por hora do dia no último mês completo com o sistema.
+  function perfilHorario() {
+    const { dias, hoje } = base();
+    const ref = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    const mes = monthKey(ref);
+    const doMes = dias.filter(d => d.data.startsWith(mes));
+    const horas = Array.from({ length: 24 }, (_, hora) => ({ hora, kwh: 0, por_dispositivo: {} }));
+    for (const d of DISPOSITIVOS) {
+      const mediaDia = sum(doMes.map(x => x.por[d.id])) / doMes.length;
+      const perfilDia = sum(horas.map(h => PERFIL[d.id](h.hora))) / 1000;
+      for (const h of horas) {
+        const v = (PERFIL[d.id](h.hora) / 1000) * (mediaDia / perfilDia);
+        h.por_dispositivo[d.id] = r3(v);
+        h.kwh += v;
+      }
+    }
+    horas.forEach(h => { h.kwh = r3(h.kwh); });
+    return { mes, horas };
+  }
+
+  // Maiores picos de potência do mês atual.
+  function picos() {
+    const { dias, hoje } = base();
+    const doMes = dias.filter(d => d.data.startsWith(monthKey(hoje)) && d.data !== dayKey(hoje));
+    const r = rng(4242);
+    const eventos = [];
+    for (const d of doMes) {
+      const at = (h, m) => new Date(d.date.getFullYear(), d.date.getMonth(), d.date.getDate(), h, m).toISOString();
+      eventos.push({ inicio: at(19 + Math.floor(r() * 2), Math.floor(r() * 60)), dispositivo_id: 'chuveiro', pico_w: Math.round(5380 + r() * 110), duracao_min: Math.round(9 + r() * 7) });
+      eventos.push({ inicio: at(13 + Math.floor(r() * 3), Math.floor(r() * 60)), dispositivo_id: 'ar', pico_w: Math.round(1250 + r() * 140), duracao_min: Math.round(90 + r() * 120) });
+      eventos.push({ inicio: at(12, Math.floor(r() * 30)), dispositivo_id: 'cozinha', pico_w: Math.round(1180 + r() * 80), duracao_min: Math.round(3 + r() * 5) });
+    }
+    const top = id => eventos.filter(e => e.dispositivo_id === id).sort((a, b) => b.pico_w - a.pico_w);
+    return [...top('chuveiro').slice(0, 2), ...top('ar').slice(0, 1), ...top('cozinha').slice(0, 1)];
+  }
+
+  function calibracao() {
+    return {
+      ultima: '2026-09-28',
+      sensores: [
+        { canal: 'CT1', fator: null, referencia: 'Multímetro', erro_pct: 1.9 },
+        { canal: 'CT2', fator: null, referencia: 'Multímetro', erro_pct: 2.4 },
+        { canal: 'CT3', fator: null, referencia: 'Multímetro', erro_pct: 2.1 },
+        { canal: 'CT4', fator: null, referencia: 'Multímetro', erro_pct: 3.0 },
+      ],
+    };
+  }
+
+  function esp32() {
+    const r = rng(Date.now() / 60000);
+    const esperados = 8640; // 1 pacote a cada 10 s
+    return {
+      id: 'ESP32-01',
+      firmware: '0.1.0',
+      online: true,
+      ultima_leitura: new Date().toISOString(),
+      ip: '192.168.0.42',
+      rssi_dbm: Math.round(-62 + r() * 8),
+      ligado_desde: new Date(Date.now() - (3 * 24 + 4) * 3600 * 1000).toISOString(),
+      intervalo_envio_s: 10,
+      protocolo: 'HTTPS (REST)',
+      endpoint: '/api/leituras',
+      pacotes_esperados_24h: esperados,
+      pacotes_recebidos_24h: esperados - Math.round(20 + r() * 30),
+    };
   }
 
   function previsao() {
@@ -199,6 +269,9 @@ const Mock = (() => {
     return {
       mes,
       modelo: 'Média por dia da semana (janela de 28 dias)',
+      variaveis: 'consumo diário, dia da semana',
+      treino_desde: dayKey(DATA_ADOCAO),
+      ultimo_treino: dayKey(hoje),
       dias_no_mes: nDias,
       kwh_previsto: ult.kwh_acumulado,
       kwh_min: ult.min,
@@ -210,5 +283,5 @@ const Mock = (() => {
     };
   }
 
-  return { dispositivos, tempoReal, ultimas24h, diario, mensal, previsao };
+  return { dispositivos, tempoReal, ultimas24h, diario, mensal, perfilHorario, picos, calibracao, esp32, previsao };
 })();

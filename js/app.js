@@ -1,22 +1,33 @@
-/* Telas, roteamento por hash (#painel, #historico, ...) e atualização em tempo real. */
+/* Telas, roteamento por hash (#visao, #historico, ...) e atualização em tempo real. */
+
+const NOME_SISTEMA = '[NOME DO SISTEMA]';
 
 const $ = (s, r = document) => r.querySelector(s);
 const sum = a => a.reduce((s, v) => s + v, 0);
 const nf = (v, d = 0) => v.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const brl = v => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const pct = (v, d = 1) => `${nf(v * 100, d)}%`;
+const sinal = (v, d = 1) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${pct(Math.abs(v), d)}`;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
-const DIAS_SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
-const mesCurto = k => { const [y, m] = k.split('-'); return `${MESES[m - 1].slice(0, 3)}/${y.slice(2)}`; };
-const mesLongo = k => { const [y, m] = k.split('-'); return `${MESES[m - 1]} de ${y}`; };
-const mesNome = k => MESES[k.split('-')[1] - 1];
-const dataCurta = k => { const [, m, d] = k.split('-'); return `${d}/${m}`; };
-const hora = iso => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+const partes = k => k.split('-').map(Number);
+const mesAbrev = k => cap(MESES[partes(k)[1] - 1].slice(0, 3));                    // "Set"
+const mesAno = k => `${mesAbrev(k)}/${String(partes(k)[0]).slice(2)}`;              // "Set/26"
+const mesExtenso = k => `${MESES[partes(k)[1] - 1]}/${partes(k)[0]}`;               // "setembro/2026"
+const diasNoMes = k => new Date(partes(k)[0], partes(k)[1], 0).getDate();
+const ddmm = data => data.slice(8, 10) + '/' + data.slice(5, 7);
+const dataBr = data => data.split('-').reverse().join('/');
+const horaMin = iso => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-const fatKwh = m => Faturas.all()[m.mes] ?? m.kwh_fatura;
-const corDe = disp => id => `var(--s${disp.findIndex(d => d.id === id) + 1})`;
+// Barras dos circuitos: tons de verde do mais ao menos consumidor.
+const RANK = ['var(--g-900)', 'var(--g-700)', 'var(--g-500)', 'var(--g-300)'];
+const BANHO_MIN = 10; // duração média de um banho assumida na simulação de economia
+
+const fatKwh = m => Faturas.get()[m.mes] ?? m.kwh_fatura;
+const nomeDe = d => Nomes.get()[d.id] || d.nome;
+const valorMes = m => (m.com_sistema ? m.kwh_sensores : fatKwh(m));
 
 /* ---------- infraestrutura das telas ---------- */
 
@@ -24,6 +35,7 @@ let redraws = new Map();
 let timers = [];
 
 function chart(key, fn) { fn(); redraws.set(key, fn); }
+function every(ms, fn) { fn(); timers.push(setInterval(fn, ms)); }
 
 let resizeT;
 window.addEventListener('resize', () => {
@@ -31,412 +43,698 @@ window.addEventListener('resize', () => {
   resizeT = setTimeout(() => redraws.forEach(fn => fn()), 150);
 });
 
-const tile = (label, value, foot = '', cls = '') =>
-  `<div class="tile ${cls}"><span class="tile-label">${label}</span><strong class="tile-value">${value}</strong><span class="tile-foot">${foot}</span></div>`;
+const pageHead = (eyebrow, titulo, acoes = '') => `
+  <header class="page-head">
+    <div><p class="eyebrow" id="eyebrow">${eyebrow}</p><h1>${titulo}</h1></div>
+    ${acoes ? `<div class="page-actions">${acoes}</div>` : ''}
+  </header>`;
 
-const head = (titulo, sub = '') =>
-  `<header class="page-head"><h1>${titulo}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</header>`;
+const tile = ({ label, value, unit = '', foot = '', cls = '', extra = '' }) => `
+  <div class="tile ${cls}">
+    <span class="tile-label">${label}</span>
+    <strong class="tile-value">${value}${unit ? ` <small>${unit}</small>` : ''}</strong>
+    ${extra}${foot ? `<span class="tile-foot">${foot}</span>` : ''}
+  </div>`;
 
-const tipRow = (cor, nome, valor) =>
-  `<div class="tt-row"><span><i class="sw" style="--c:${cor}"></i>${nome}</span><b>${valor}</b></div>`;
+const mini = (label, value, cls = '') => `<div class="mini ${cls}"><span>${label}</span><b>${value}</b></div>`;
 
-function hbars(rows) {
-  const max = Math.max(...rows.map(r => r.v), 1e-9);
-  return `<ul class="hbars">${rows.map(r => `
-    <li>
-      <div class="hb-top"><span><i class="sw" style="--c:${r.cor}"></i>${esc(r.nome)}</span><span class="hb-val">${r.valor}</span></div>
-      <div class="hb-track"><div class="hb-fill" style="width:${((r.v / max) * 100).toFixed(1)}%;--c:${r.cor}"></div></div>
-    </li>`).join('')}</ul>`;
+const legenda = itens => `<div class="legend">${itens
+  .map(([kind, cor, nome]) => `<span class="lg-item"><i class="sw ${kind}" style="--c:${cor}"></i>${nome}</span>`)
+  .join('')}</div>`;
+
+const tipRow = (nome, valor, cor) =>
+  `<div class="tt-row"><span>${cor ? `<i class="sw" style="--c:${cor}"></i>` : ''}${nome}</span><b>${valor}</b></div>`;
+
+const nota = (extra = '') => Api.demo()
+  ? `<p class="footnote">Valores ilustrativos para o protótipo${extra} — configure a API em <a href="#configuracoes">Configurações</a> para usar os dados reais do banco.</p>`
+  : '';
+
+function dialogo({ titulo, descricao = '', campos, enviar = 'Salvar', onSubmit }) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `
+    <form class="form">
+      <h2>${titulo}</h2>
+      ${descricao ? `<p class="muted">${descricao}</p>` : ''}
+      ${campos.map(c => `<label>${c.label}${c.options
+        ? `<select name="${c.name}">${c.options.map(([v, t]) => `<option value="${esc(v)}" ${v === c.value ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`
+        : `<input name="${c.name}" type="${c.type || 'text'}" ${c.step ? `step="${c.step}"` : ''} ${c.min != null ? `min="${c.min}"` : ''} ${c.required === false ? '' : 'required'} value="${esc(c.value ?? '')}" placeholder="${esc(c.placeholder || '')}">`}
+      </label>`).join('')}
+      <div class="form-actions">
+        <button type="submit" class="btn dark">${enviar}</button>
+        <button type="button" class="btn" data-cancel>Cancelar</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dlg);
+  dlg.querySelector('[data-cancel]').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.querySelector('form').addEventListener('submit', e => {
+    e.preventDefault();
+    onSubmit(Object.fromEntries(new FormData(e.target)));
+    dlg.close();
+  });
+  dlg.showModal();
 }
 
-function statusMeta(razao) {
-  if (razao <= 0.9) return { cls: 'good', icon: '✓', txt: 'Dentro da meta' };
-  if (razao <= 1) return { cls: 'warning', icon: '!', txt: 'Perto do limite' };
-  return { cls: 'critical', icon: '▲', txt: 'Acima da meta' };
+function lancarFatura(mensal) {
+  const ops = mensal.filter(m => m.completo).slice(-12).reverse().map(m => [m.mes, cap(mesExtenso(m.mes))]);
+  dialogo({
+    titulo: 'Lançar consumo de uma fatura',
+    descricao: 'Use o consumo em kWh impresso na conta de luz da concessionária.',
+    campos: [
+      { name: 'mes', label: 'Mês de referência', options: ops, value: ops[0][0] },
+      { name: 'kwh', label: 'Consumo da fatura (kWh)', type: 'number', step: '1', min: 0 },
+    ],
+    onSubmit: d => {
+      const f = Faturas.get();
+      f[d.mes] = +d.kwh;
+      Faturas.set(f);
+      render();
+    },
+  });
 }
 
-/* ---------- Painel ---------- */
+function baixarCSV(nome, linhas) {
+  const csv = '﻿' + linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = nome;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
 
-async function viewPainel(root) {
-  const [disp, prev, h24, diario] = await Promise.all(['dispositivos', 'previsao', 'ultimas24h', 'diario'].map(Api.get));
-  const s = Settings.get(), preco = precoKwh(s), cor = corDe(disp);
-  const doMes = diario.filter(d => d.data.startsWith(prev.mes));
-  const kwhMes = sum(doMes.map(d => d.total_kwh));
-  const gastoPrev = prev.kwh_previsto * preco;
-  const st = statusMeta(gastoPrev / s.meta);
-  const escala = Math.max(s.meta, prev.kwh_max * preco) * 1.04;
-  const ranking = disp
-    .map(d => ({ ...d, kwh: sum(doMes.map(x => x.por_dispositivo[d.id] || 0)) }))
-    .sort((a, b) => b.kwh - a.kwh);
+function antesDepois(mensal) {
+  const antes = mensal.filter(m => !m.com_sistema && m.completo).slice(-6);
+  const depois = mensal.filter(m => m.com_sistema && m.completo);
+  const mA = antes.length ? sum(antes.map(fatKwh)) / antes.length : null;
+  const mD = depois.length ? sum(depois.map(m => m.kwh_sensores)) / depois.length : null;
+  return { mA, mD, variacao: mA && mD ? mD / mA - 1 : null };
+}
+
+// Janela de 3 horas seguidas com maior consumo e o circuito que mais pesa nela.
+function picoHorario(perfil) {
+  const h = perfil.horas;
+  let bi = 0, best = -1;
+  for (let i = 0; i <= 21; i++) {
+    const v = h[i].kwh + h[i + 1].kwh + h[i + 2].kwh;
+    if (v > best) { best = v; bi = i; }
+  }
+  const ids = Object.keys(h[0].por_dispositivo);
+  const dom = ids
+    .map(id => [id, h[bi].por_dispositivo[id] + h[bi + 1].por_dispositivo[id] + h[bi + 2].por_dispositivo[id]])
+    .sort((a, b) => b[1] - a[1])[0][0];
+  return { inicio: bi, fim: bi + 2, janela: `${bi}h–${bi + 2}h`, dispositivo: dom };
+}
+
+const mediaDiaria = (diario, id, dias = 28) => {
+  const ult = diario.slice(-dias - 1, -1);
+  return ult.length ? sum(ult.map(d => d.por_dispositivo[id] || 0)) / ult.length : 0;
+};
+
+/* ---------- Visão mensal ---------- */
+
+let mesSel = null;
+
+async function viewVisao(root) {
+  const [disp, mensal, prev, diario, perfil] = await Promise.all(['dispositivos', 'mensal', 'previsao', 'diario', 'perfilHorario'].map(Api.get));
+  const s = Settings.get(), preco = precoKwh(s), ses = Sessao.get() || {};
+  const mesesSis = mensal.filter(m => m.com_sistema).map(m => m.mes);
+  const mes = mesesSis.includes(mesSel) ? mesSel : prev.mes;
+  const atual = mes === prev.mes;
+  const doMes = diario.filter(d => d.data.startsWith(mes));
+  const kwh = sum(doMes.map(d => d.total_kwh));
+  const nDias = diasNoMes(mes);
+  const fechKwh = atual ? prev.kwh_previsto : kwh;
+  const usado = (kwh * preco) / s.meta;
+  const circ = disp.map(d => ({ ...d, kwh: sum(doMes.map(x => x.por_dispositivo[d.id] || 0)) }));
+  const ordem = circ.slice().sort((a, b) => b.kwh - a.kwh).map(d => d.id);
+  const iSel = mensal.findIndex(m => m.mes === mes);
+  const ult6 = mensal.slice(Math.max(0, iSel - 5), iSel + 1);
+  const temAntes = ult6.some(m => !m.com_sistema);
+  const ad = antesDepois(mensal);
+  const comparativo = mensal.filter(m => m.com_sistema && m.completo).slice(-3).reverse();
+  const pico = picoHorario(perfil);
+  const chuv = disp.find(d => d.id === 'chuveiro');
+  const econ5 = chuv ? mediaDiaria(diario, 'chuveiro') * (5 / BANHO_MIN) * 30 * preco : 0;
+  const domNome = nomeDe(disp.find(d => d.id === pico.dispositivo) || { id: pico.dispositivo, nome: pico.dispositivo });
 
   root.innerHTML = `
-    ${head('Painel', new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}
+    ${pageHead(`Olá, ${esc(ses.nome || 'usuário')}`, `Consumo de ${mesExtenso(mes)}`, `
+      <label class="inline-label">Mês
+        <select id="sel-mes">${mesesSis.slice().reverse().map(k => `<option value="${k}" ${k === mes ? 'selected' : ''}>${cap(mesExtenso(k))}</option>`).join('')}</select>
+      </label>
+      <button type="button" class="btn dark" id="btn-export">Exportar relatório</button>`)}
+
+    <div class="statusbar">
+      <span><i class="dot-on"></i><b>ESP32 online</b> · última leitura <span id="rt-ago">agora</span> · ${disp.length} sensores CT ativos</span>
+      <span class="mono">Potência agora: <b id="rt-kw">—</b></span>
+    </div>
+
     <section class="tiles">
-      ${tile('<span class="live-dot" aria-hidden="true"></span>Potência agora', '<span id="rt-total">—</span>', '<span id="rt-time">conectando…</span>', 'tile-live')}
-      ${tile(`Consumo em ${mesNome(prev.mes)}`, `${nf(kwhMes, 1)} kWh`, `média de ${nf(kwhMes / Math.max(1, doMes.length - 1 + new Date().getHours() / 24), 1)} kWh por dia`)}
-      ${tile('Gasto até agora', brl(kwhMes * preco), `tarifa de ${brl(preco)}/kWh`)}
-      ${tile('Previsão da conta', brl(gastoPrev), `entre ${brl(prev.kwh_min * preco)} e ${brl(prev.kwh_max * preco)}`)}
+      ${tile({ label: atual ? 'Consumo no mês (até hoje)' : 'Consumo no mês', value: nf(kwh, 1), unit: 'kWh', foot: `<span class="green">${atual ? doMes.length : nDias} de ${nDias} dias medidos</span>` })}
+      ${tile({ label: atual ? 'Gasto estimado até hoje' : 'Gasto estimado no mês', value: brl(kwh * preco), foot: 'consumo × tarifa cadastrada' })}
+      ${tile({
+        cls: 'dark',
+        label: atual ? 'Previsão para o fechamento (ML)' : 'Fechamento do mês',
+        value: brl(fechKwh * preco),
+        foot: atual
+          ? `≈ ${nf(fechKwh)} kWh${prev.mae_kwh != null ? ` · margem ± ${brl(prev.mae_kwh * preco)} (EAM)` : ''}`
+          : `${nf(fechKwh)} kWh medidos pelo sistema`,
+      })}
+      ${tile({
+        label: 'Meta mensal',
+        value: brl(s.meta),
+        extra: `<div class="progress ${usado > 1 ? 'over' : ''}"><div style="width:${Math.min(100, usado * 100).toFixed(1)}%"></div></div>`,
+        foot: `${pct(usado, 0)} utilizado`,
+      })}
     </section>
 
     <section class="grid-2">
       <article class="card">
-        <div class="card-head"><h2>Meta de gasto do mês</h2><a href="#configuracoes" class="link">Alterar meta</a></div>
-        <p class="status ${st.cls}"><span class="status-icon" aria-hidden="true">${st.icon}</span>${st.txt}</p>
-        <p class="lead">A previsão para ${mesNome(prev.mes)} é <b>${brl(gastoPrev)}</b>, ${gastoPrev <= s.meta ? 'abaixo' : 'acima'} da sua meta de <b>${brl(s.meta)}</b>.</p>
-        <div class="meter" role="img" aria-label="Gasto atual ${brl(kwhMes * preco)}, previsão ${brl(gastoPrev)}, meta ${brl(s.meta)}">
-          <div class="meter-prev" style="width:${(gastoPrev / escala * 100).toFixed(1)}%"></div>
-          <div class="meter-now" style="width:${(kwhMes * preco / escala * 100).toFixed(1)}%"></div>
-          <div class="meter-goal" style="left:${(s.meta / escala * 100).toFixed(1)}%"><span>meta</span></div>
+        <div class="card-head"><h2>Consumo mensal (kWh)</h2>
+          ${legenda([...(temAntes ? [['', 'var(--bar-before)', 'Fatura']] : []), ['', 'var(--g-700)', 'Medido'], ...(atual ? [['ghost', 'var(--orange)', 'Previsto']] : [])])}
         </div>
-        <div class="legend">
-          <span class="lg-item"><i class="sw" style="--c:var(--s1)"></i>Gasto até agora</span>
-          <span class="lg-item"><i class="sw" style="--c:var(--s1-soft)"></i>Previsão até o fim do mês</span>
-        </div>
+        <div id="ch-mensal"></div>
       </article>
       <article class="card">
-        <div class="card-head"><h2>Quem mais consome em ${mesNome(prev.mes)}</h2><a href="#equipamentos" class="link">Ver equipamentos</a></div>
-        ${hbars(ranking.map(d => ({ nome: d.nome, cor: cor(d.id), v: d.kwh, valor: `${nf(d.kwh, 1)} kWh · ${pct(d.kwh / kwhMes, 0)}` })))}
+        <div class="card-head"><h2>Consumo por circuito (sensor CT)</h2></div>
+        <ul class="circuits">${circ.map(d => `
+          <li>
+            <div class="c-top"><span>${d.canal} · ${esc(nomeDe(d))}${d.descricao ? ` (${esc(d.descricao)})` : ''}</span>
+              <span class="mono">${nf(d.kwh, 1)} kWh · ${pct(kwh ? d.kwh / kwh : 0, 0)}</span></div>
+            <div class="track"><div style="width:${kwh ? (d.kwh / kwh * 100).toFixed(1) : 0}%;background:${RANK[Math.min(3, ordem.indexOf(d.id))]}"></div></div>
+          </li>`).join('')}
+        </ul>
+        <p class="callout">Padrão identificado: o circuito <b>${esc(domNome)}</b> concentra o pico entre ${pico.inicio}h e ${pico.fim}h.${chuv ? ` Reduzir 5 min por banho economiza cerca de ${brl(econ5)}/mês.` : ''}</p>
       </article>
     </section>
 
-    <article class="card">
-      <div class="card-head"><h2>Potência nas últimas 24 horas</h2><span class="muted">média a cada 15 minutos</span></div>
-      <div id="ch-24h"></div>
-    </article>`;
+    <section class="grid-2">
+      <article class="card">
+        <div class="card-head"><h2>Antes × depois do sistema</h2></div>
+        <div class="minis">
+          ${mini('Média antes (fatura)', ad.mA ? `${nf(ad.mA)} kWh` : '—')}
+          ${mini('Média depois', ad.mD ? `${nf(ad.mD)} kWh` : '—')}
+        </div>
+        ${ad.variacao != null ? `<p class="delta-line"><span class="badge ${ad.variacao <= 0 ? 'good' : 'bad'}">${sinal(ad.variacao)}</span> ${ad.variacao <= 0 ? 'redução' : 'aumento'} média mensal desde a instalação</p>` : '<p class="muted">A comparação aparece ao fim do primeiro mês completo com o sistema.</p>'}
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Medido × fatura da concessionária</h2></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Mês</th><th>Sistema</th><th>Fatura</th><th>Diferença</th></tr></thead>
+          <tbody>${comparativo.map(m => {
+            const f = fatKwh(m);
+            return `<tr><td class="mono">${mesAno(m.mes)}</td><td class="mono">${nf(m.kwh_sensores)} kWh</td>
+              <td class="mono">${f ? `${nf(f)} kWh` : '—'}</td><td class="mono">${f ? pct(Math.abs(m.kwh_sensores - f) / f) : '—'}</td></tr>`;
+          }).join('') || '<tr><td colspan="4" class="muted">Sem meses completos ainda.</td></tr>'}</tbody>
+        </table></div>
+        <button type="button" class="link-btn" id="btn-fatura">Lançar consumo de uma nova fatura</button>
+      </article>
+    </section>
+    ${nota()}`;
 
-  chart('24h', () => Charts.line($('#ch-24h'), {
-    ariaLabel: 'Potência total da residência nas últimas 24 horas',
-    labels: h24.map(p => hora(p.timestamp)),
-    series: [{ name: 'Potência', color: 'var(--s1)', values: h24.map(p => p.potencia_w), area: true }],
-    yFormat: v => `${nf(v)} W`,
-    tip: i => `<div class="tt-title">${hora(h24[i].timestamp)}</div>${tipRow('var(--s1)', 'Potência', `${nf(h24[i].potencia_w)} W`)}`,
+  chart('mensal', () => Charts.bar($('#ch-mensal'), {
+    ariaLabel: 'Consumo mensal em kWh',
+    height: 230,
+    axis: false,
+    valueLabels: true,
+    valueFormat: v => nf(v),
+    labels: ult6.map(m => mesAbrev(m.mes)),
+    values: ult6.map(valorMes),
+    color: i => (ult6[i].com_sistema ? 'var(--g-700)' : 'var(--bar-before)'),
+    ghost: ult6.map(m => (m.mes === prev.mes ? prev.kwh_previsto : null)),
+    boldIndex: ult6.length - 1,
+    tip: i => {
+      const m = ult6[i];
+      return `<div class="tt-title">${cap(mesExtenso(m.mes))}</div>
+        ${tipRow(m.com_sistema ? (m.completo ? 'Medido' : 'Medido até hoje') : 'Fatura', `${nf(valorMes(m))} kWh`)}
+        ${m.mes === prev.mes ? tipRow('Previsto', `${nf(prev.kwh_previsto)} kWh`) : ''}
+        ${tipRow('Custo', brl((m.mes === prev.mes ? prev.kwh_previsto : valorMes(m)) * preco))}`;
+    },
   }));
 
-  startLive(rt => {
-    $('#rt-total').textContent = `${nf(rt.potencia_total_w)} W`;
-    $('#rt-time').textContent = `atualizado às ${new Date(rt.timestamp).toLocaleTimeString('pt-BR')}`;
+  $('#sel-mes').addEventListener('change', e => { mesSel = e.target.value; render(); });
+  $('#btn-export').addEventListener('click', () => window.print());
+  $('#btn-fatura').addEventListener('click', () => lancarFatura(mensal));
+
+  let ultima = null;
+  every(3000, async () => {
+    try {
+      const rt = await Api.get('tempoReal');
+      ultima = new Date(rt.timestamp);
+      const el = $('#rt-kw');
+      if (el) el.textContent = `${nf(rt.potencia_total_w / 1000, 2)} kW`;
+    } catch { /* mantém o último valor */ }
+  });
+  every(1000, () => {
+    const el = $('#rt-ago');
+    if (el && ultima) el.textContent = `há ${Math.max(0, Math.round((Date.now() - ultima) / 1000))} s`;
   });
 }
 
-function startLive(onData) {
-  const tick = async () => {
-    try { onData(await Api.get('tempoReal')); } catch { /* mantém o último valor */ }
-  };
-  tick();
-  timers.push(setInterval(tick, 3000));
-}
+/* ---------- Histórico ---------- */
 
-/* ---------- Histórico mensal ---------- */
+let histModo = 'mensal';
 
 async function viewHistorico(root) {
-  const mensal = (await Api.get('mensal')).filter(m => m.completo);
-  const s = Settings.get(), preco = precoKwh(s);
-  const kwh = m => m.kwh_sensores ?? fatKwh(m);
-  let janela = 12;
+  const [mensal, prev, diario, h24, perfil] = await Promise.all(['mensal', 'previsao', 'diario', 'ultimas24h', 'perfilHorario'].map(Api.get));
+  const preco = precoKwh();
+  const EYEBROW = { mensal: 'Últimos 12 meses', diario: 'Últimos 30 dias', hora: 'Últimas 24 horas' };
+  const pico = picoHorario(perfil);
+  const maxPerfil = Math.max(...perfil.horas.map(h => h.kwh));
+  const registros = mensal.filter(m => m.completo).slice(-12).reverse();
 
   root.innerHTML = `
-    ${head('Histórico mensal', 'Consumo de cada mês fechado. O mês atual aparece no Painel.')}
-    <div class="filters">
+    ${pageHead(EYEBROW[histModo], 'Histórico de consumo', `
       <div class="seg" role="group" aria-label="Período">
-        <button type="button" data-n="12" aria-pressed="true">12 meses</button>
-        <button type="button" data-n="24" aria-pressed="false">24 meses</button>
-      </div>
-    </div>
-    <div id="hist-body"></div>`;
+        ${[['mensal', 'Mensal'], ['diario', 'Diário'], ['hora', 'Por hora']].map(([k, t]) => `<button type="button" data-k="${k}" aria-pressed="${k === histModo}">${t}</button>`).join('')}
+      </div>`)}
+    <article class="card" id="hist-main"></article>
+    <article class="card">
+      <div class="card-head"><h2>Perfil por hora do dia (média de ${MESES[partes(perfil.mes)[1] - 1]})</h2><span class="muted">Pico identificado: ${pico.janela}</span></div>
+      <div id="ch-perfil"></div>
+    </article>
+    <article class="card">
+      <div class="card-head"><h2>Registros mensais</h2><button type="button" class="btn" id="btn-csv">Baixar CSV</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Mês</th><th>Consumo</th><th>Custo estimado</th><th>Vs. mês anterior</th><th>Fonte</th></tr></thead>
+        <tbody>${registros.map(m => {
+          const i = mensal.indexOf(m);
+          const ant = i > 0 ? valorMes(mensal[i - 1]) : null;
+          const v = ant ? valorMes(m) / ant - 1 : null;
+          return `<tr><td class="mono">${mesAno(m.mes)}</td><td class="mono">${nf(valorMes(m))} kWh</td><td class="mono">${brl(valorMes(m) * preco)}</td>
+            <td class="mono ${v == null ? '' : v <= 0 ? 'green' : 'red'}">${v == null ? '—' : sinal(v)}</td><td>${m.com_sistema ? 'Sistema' : 'Fatura'}</td></tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </article>
+    ${nota(` — tarifa de ${brl(preco)}/kWh`)}`;
 
-  function draw() {
-    const lista = mensal.slice(-janela);
-    const valores = lista.map(kwh);
-    const iMax = valores.indexOf(Math.max(...valores));
-    $('#hist-body').innerHTML = `
-      <section class="tiles tiles-3">
-        ${tile('Média mensal', `${nf(sum(valores) / valores.length)} kWh`, `≈ ${brl(sum(valores) / valores.length * preco)} por mês`)}
-        ${tile('Mês de maior consumo', mesLongo(lista[iMax].mes), `${nf(valores[iMax])} kWh`)}
-        ${tile(`Total em ${janela} meses`, `${nf(sum(valores))} kWh`, `≈ ${brl(sum(valores) * preco)} na tarifa atual`)}
-      </section>
-      <article class="card">
-        <div class="card-head"><h2>Consumo por mês</h2><span class="muted">kWh</span></div>
-        <div id="ch-hist"></div>
-      </article>
-      <article class="card">
-        <div class="card-head"><h2>Tabela</h2></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Mês</th><th>Fonte</th><th class="num">Consumo</th><th class="num">Custo estimado</th><th class="num">Fatura</th><th class="num">Diferença</th></tr></thead>
-          <tbody>${lista.slice().reverse().map(m => {
-            const f = fatKwh(m);
-            const dif = m.kwh_sensores != null && f ? (m.kwh_sensores - f) / f : null;
-            return `<tr>
-              <td>${mesLongo(m.mes)}</td>
-              <td>${m.com_sistema ? '<span class="tag tag-on">Sensores</span>' : '<span class="tag">Fatura</span>'}</td>
-              <td class="num">${nf(kwh(m))} kWh</td>
-              <td class="num">${brl(kwh(m) * preco)}</td>
-              <td class="num">${f ? `${nf(f)} kWh` : '—'}</td>
-              <td class="num">${dif == null ? '—' : (dif > 0 ? '+' : '') + pct(dif)}</td>
-            </tr>`;
-          }).join('')}</tbody>
-        </table></div>
-        <p class="note">Antes da instalação do sistema, o consumo vem da fatura da concessionária. Depois, vem dos sensores CT; a coluna “Diferença” compara as duas medições.</p>
-      </article>`;
+  function drawMain() {
+    $('#eyebrow').textContent = EYEBROW[histModo];
+    const main = $('#hist-main');
 
-    chart('hist', () => Charts.bar($('#ch-hist'), {
-      ariaLabel: 'Consumo mensal em kWh',
-      legend: [
-        { name: 'Fatura da concessionária (antes do sistema)', color: 'var(--bar-muted)' },
-        { name: 'Medido pelos sensores', color: 'var(--s1)' },
-      ],
-      labels: lista.map(m => mesCurto(m.mes)),
-      series: [{ name: 'Consumo', values: valores, color: i => lista[i].com_sistema ? 'var(--s1)' : 'var(--bar-muted)' }],
-      refLine: { value: s.meta / preco, label: `meta ≈ ${nf(s.meta / preco)} kWh` },
-      yFormat: v => nf(v),
-      tip: i => `<div class="tt-title">${mesLongo(lista[i].mes)}</div>
-        ${tipRow(lista[i].com_sistema ? 'var(--s1)' : 'var(--bar-muted)', lista[i].com_sistema ? 'Sensores' : 'Fatura', `${nf(valores[i])} kWh`)}
-        <div class="tt-row"><span>Custo estimado</span><b>${brl(valores[i] * preco)}</b></div>`,
-    }));
+    if (histModo === 'mensal') {
+      const lista = mensal.slice(-12);
+      const iInst = lista.findIndex(m => m.com_sistema);
+      const ad = antesDepois(mensal);
+      main.innerHTML = `
+        <div class="card-head"><h2>Consumo mensal (kWh) — antes e depois da instalação</h2>
+          ${legenda([['', 'var(--bar-before)', 'Fatura (antes)'], ['', 'var(--g-700)', 'Medido pelo sistema'], ['ghost', 'var(--orange)', 'Previsto']])}</div>
+        <div id="ch-main"></div>
+        <div class="minis minis-3">
+          ${mini('Média antes', ad.mA ? `${nf(ad.mA)} kWh` : '—')}
+          ${mini('Média depois', ad.mD ? `${nf(ad.mD)} kWh` : '—')}
+          ${mini('Variação', ad.variacao != null ? sinal(ad.variacao) : '—', ad.variacao != null && ad.variacao <= 0 ? 'good' : '')}
+        </div>`;
+      chart('main', () => Charts.bar($('#ch-main'), {
+        ariaLabel: 'Consumo mensal antes e depois da instalação',
+        height: 250,
+        axis: false,
+        valueLabels: true,
+        valueFormat: v => nf(v),
+        labels: lista.map(m => mesAbrev(m.mes)),
+        values: lista.map(valorMes),
+        color: i => (lista[i].com_sistema ? 'var(--g-700)' : 'var(--bar-before)'),
+        ghost: lista.map(m => (m.mes === prev.mes ? prev.kwh_previsto : null)),
+        marker: iInst > 0 ? { index: iInst, label: 'Instalação' } : null,
+        boldIndex: lista.length - 1,
+        tip: i => `<div class="tt-title">${cap(mesExtenso(lista[i].mes))}</div>
+          ${tipRow(lista[i].com_sistema ? 'Medido' : 'Fatura', `${nf(valorMes(lista[i]))} kWh`)}
+          ${lista[i].mes === prev.mes ? tipRow('Previsto', `${nf(prev.kwh_previsto)} kWh`) : ''}`,
+      }));
+    } else if (histModo === 'diario') {
+      const dias = diario.slice(-31, -1);
+      const vals = dias.map(d => d.total_kwh);
+      const iMax = vals.indexOf(Math.max(...vals));
+      main.innerHTML = `
+        <div class="card-head"><h2>Consumo diário (kWh)</h2>${legenda([['', 'var(--g-700)', 'Medido pelo sistema']])}</div>
+        <div id="ch-main"></div>
+        <div class="minis minis-3">
+          ${mini('Média diária', `${nf(sum(vals) / vals.length, 1)} kWh`)}
+          ${mini('Dia de maior consumo', `${ddmm(dias[iMax].data)} · ${nf(vals[iMax], 1)} kWh`)}
+          ${mini('Gasto médio por dia', brl((sum(vals) / vals.length) * preco))}
+        </div>`;
+      chart('main', () => Charts.bar($('#ch-main'), {
+        ariaLabel: 'Consumo diário nos últimos 30 dias',
+        height: 250,
+        yFormat: v => nf(v),
+        labels: dias.map(d => ddmm(d.data)),
+        values: vals,
+        color: 'var(--g-700)',
+        tip: i => `<div class="tt-title">${dataBr(dias[i].data)}</div>${tipRow('Consumo', `${nf(vals[i], 1)} kWh`)}${tipRow('Custo', brl(vals[i] * preco))}`,
+      }));
+    } else {
+      const horas = [];
+      for (let i = 0; i + 4 <= h24.length; i += 4) {
+        const bloco = h24.slice(i, i + 4);
+        horas.push({ t: bloco[0].timestamp, kwh: sum(bloco.map(p => p.potencia_w)) * 0.25 / 1000 });
+      }
+      const vals = horas.map(h => h.kwh);
+      const iMax = vals.indexOf(Math.max(...vals));
+      main.innerHTML = `
+        <div class="card-head"><h2>Consumo por hora (kWh)</h2>${legenda([['', 'var(--g-700)', 'Medido pelo sistema']])}</div>
+        <div id="ch-main"></div>
+        <div class="minis minis-3">
+          ${mini('Consumo nas últimas 24 h', `${nf(sum(vals), 1)} kWh`)}
+          ${mini('Hora de maior consumo', `${horaMin(horas[iMax].t)} · ${nf(vals[iMax], 2)} kWh`)}
+          ${mini('Potência média', `${nf((sum(vals) / vals.length) * 1000)} W`)}
+        </div>`;
+      chart('main', () => Charts.bar($('#ch-main'), {
+        ariaLabel: 'Consumo por hora nas últimas 24 horas',
+        height: 250,
+        yFormat: v => nf(v, 1),
+        labels: horas.map(h => horaMin(h.t)),
+        values: vals,
+        color: 'var(--g-700)',
+        tip: i => `<div class="tt-title">${horaMin(horas[i].t)}</div>${tipRow('Consumo', `${nf(vals[i], 2)} kWh`)}`,
+      }));
+    }
   }
 
-  root.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
-    janela = +b.dataset.n;
-    root.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
-    draw();
+  chart('perfil', () => Charts.bar($('#ch-perfil'), {
+    ariaLabel: 'Consumo médio por hora do dia',
+    height: 150,
+    axis: false,
+    labels: perfil.horas.map(h => `${h.hora}h`),
+    values: perfil.horas.map(h => h.kwh),
+    xTicks: [0, 6, 12, 18, 23],
+    color: i => {
+      if (i >= pico.inicio && i <= pico.fim) return 'var(--g-900)';
+      const r = perfil.horas[i].kwh / maxPerfil;
+      return r > 0.55 ? 'var(--g-700)' : r > 0.3 ? 'var(--g-500)' : 'var(--g-300)';
+    },
+    tip: i => `<div class="tt-title">${i}h – ${i + 1}h</div>${tipRow('Média', `${nf(perfil.horas[i].kwh, 2)} kWh`)}`,
   }));
-  draw();
+
+  root.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
+    histModo = b.dataset.k;
+    root.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
+    drawMain();
+  }));
+  $('#btn-csv').addEventListener('click', () => baixarCSV('registros-mensais.csv', [
+    ['Mês', 'Consumo (kWh)', 'Custo estimado (R$)', 'Fonte'],
+    ...registros.map(m => [m.mes, nf(valorMes(m)), nf(valorMes(m) * preco, 2), m.com_sistema ? 'Sistema' : 'Fatura']),
+  ]));
+  drawMain();
 }
 
 /* ---------- Equipamentos ---------- */
 
 async function viewEquipamentos(root) {
-  const [disp, diario] = await Promise.all(['dispositivos', 'diario'].map(Api.get));
-  const preco = precoKwh(), cor = corDe(disp);
+  const [disp, diario, picos, calib] = await Promise.all(['dispositivos', 'diario', 'picos', 'calibracao'].map(Api.get));
+  const preco = precoKwh();
   const mes = diario[diario.length - 1].data.slice(0, 7);
   const doMes = diario.filter(d => d.data.startsWith(mes));
   const total = sum(doMes.map(d => d.total_kwh));
-  const ranking = disp
-    .map(d => ({ ...d, kwh: sum(doMes.map(x => x.por_dispositivo[d.id] || 0)) }))
-    .sort((a, b) => b.kwh - a.kwh);
-  let sel = ranking[0].id;
+  const circ = disp.map(d => ({ ...d, kwh: sum(doMes.map(x => x.por_dispositivo[d.id] || 0)) }));
+  const ordem = circ.slice().sort((a, b) => b.kwh - a.kwh).map(d => d.id);
+  const novos = SensoresNovos.get();
+  const calLocal = Calibracoes.get();
+  const sensoresCal = calib.sensores.map(c => ({ ...c, ...(calLocal[c.canal] || {}) }));
+  const ultimaCal = Object.values(calLocal).map(c => c.data).concat(calib.ultima).sort().pop();
+  const fmtDur = m => (m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
+  const nomeId = id => nomeDe(disp.find(d => d.id === id) || { id, nome: id });
+  const ddhh = iso => { const d = new Date(iso); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${horaMin(iso)}`; };
 
   root.innerHTML = `
-    ${head('Equipamentos', 'Cada sensor de corrente (CT) mede um circuito ou aparelho da casa.')}
-    <section class="devices">${ranking.map(d => `
-      <article class="card device" data-id="${d.id}">
-        <div class="device-top">
-          <span class="device-name"><i class="sw" style="--c:${cor(d.id)}"></i>${esc(d.nome)}</span>
-          <span class="chip ${d.online ? 'on' : 'off'}">${d.canal} · ${d.online ? 'online' : 'offline'}</span>
-        </div>
-        <div class="device-power"><span class="pw">—</span><small>agora</small></div>
-        <dl class="device-stats">
-          <div><dt>Em ${mesNome(mes)}</dt><dd>${nf(d.kwh, 1)} kWh</dd></div>
-          <div><dt>Custo</dt><dd>${brl(d.kwh * preco)}</dd></div>
-          <div><dt>Participação</dt><dd>${pct(d.kwh / total, 0)}</dd></div>
-        </dl>
-      </article>`).join('')}
+    ${pageHead(`${disp.length} circuitos monitorados · ${mesExtenso(mes)}`, 'Equipamentos e sensores',
+      '<button type="button" class="btn dark" id="btn-add">+ Adicionar sensor</button>')}
+    <section class="devices">
+      ${circ.map(d => `
+        <article class="card device" data-id="${d.id}">
+          <div class="dev-top">
+            <div><span class="dev-ch mono">${d.canal} · GPIO ${d.gpio}</span><h3 class="dev-name">${esc(nomeDe(d))}</h3></div>
+            <span class="chip ${d.online ? 'on' : 'off'}">${d.online ? 'Ativo' : 'Offline'}</span>
+          </div>
+          <div class="dev-stats">
+            <div><span>Potência agora</span><b class="mono pw">—</b></div>
+            <div><span>No mês</span><b class="mono">${nf(d.kwh, 1)} kWh</b></div>
+          </div>
+          <div class="track"><div style="width:${total ? (d.kwh / total * 100).toFixed(1) : 0}%;background:${RANK[Math.min(3, ordem.indexOf(d.id))]}"></div></div>
+          <div class="dev-foot"><span>${pct(total ? d.kwh / total : 0, 0)} do total · ${brl(d.kwh * preco)}</span><button type="button" class="link-btn" data-rename="${d.id}">Renomear</button></div>
+        </article>`).join('')}
+      ${novos.map(n => `
+        <article class="card device pending">
+          <div class="dev-top">
+            <div><span class="dev-ch mono">${esc(n.canal)} · GPIO ${esc(n.gpio)}</span><h3 class="dev-name">${esc(n.nome)}</h3></div>
+            <span class="chip off">Aguardando</span>
+          </div>
+          <p class="muted">O sensor passa a mostrar leituras assim que o ESP32 começar a enviá-las.</p>
+        </article>`).join('')}
     </section>
-    <article class="card">
-      <div class="card-head">
-        <h2>Consumo diário — últimos 30 dias</h2>
-        <label class="select"><span class="sr-only">Equipamento</span>
-          <select id="sel-disp">${ranking.map(d => `<option value="${d.id}">${esc(d.nome)}</option>`).join('')}</select>
-        </label>
-      </div>
-      <div id="ch-disp"></div>
-    </article>`;
 
-  const ult30 = diario.slice(-31, -1); // dias completos
-  function draw() {
-    const d = disp.find(x => x.id === sel);
-    const vals = ult30.map(x => x.por_dispositivo[sel] || 0);
-    chart('disp', () => Charts.bar($('#ch-disp'), {
-      ariaLabel: `Consumo diário de ${d.nome}`,
-      labels: ult30.map(x => dataCurta(x.data)),
-      series: [{ name: d.nome, color: cor(sel), values: vals }],
-      yFormat: v => `${nf(v, v < 10 && v % 1 ? 1 : 0)}`,
-      tip: i => `<div class="tt-title">${DIAS_SEMANA[new Date(ult30[i].data + 'T12:00').getDay()]}, ${dataCurta(ult30[i].data)}</div>
-        ${tipRow(cor(sel), esc(d.nome), `${nf(vals[i], 2)} kWh`)}
-        <div class="tt-row"><span>Custo</span><b>${brl(vals[i] * preco)}</b></div>`,
-    }));
-  }
-  $('#sel-disp').addEventListener('change', e => { sel = e.target.value; draw(); });
-  draw();
+    <section class="grid-2">
+      <article class="card">
+        <div class="card-head"><h2>Maiores picos do mês</h2></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Quando</th><th>Circuito</th><th>Pico</th><th>Duração</th></tr></thead>
+          <tbody>${picos.map(p => `<tr><td class="mono">${ddhh(p.inicio)}</td><td>${esc(nomeId(p.dispositivo_id))}</td>
+            <td class="mono">${nf(p.pico_w)} W</td><td class="mono">${fmtDur(p.duracao_min)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Sem picos registrados neste mês.</td></tr>'}</tbody>
+        </table></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Calibração dos sensores</h2><span class="muted">Última: ${dataBr(ultimaCal)}</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Sensor</th><th>Fator</th><th>Referência</th><th>Erro</th></tr></thead>
+          <tbody>${sensoresCal.map(c => `<tr><td class="mono">${c.canal}</td><td class="mono">${c.fator != null && c.fator !== '' ? esc(c.fator) : '<span class="muted">a definir</span>'}</td>
+            <td class="mono">${esc(c.referencia)}</td><td class="mono">${nf(+c.erro_pct, 1)}%</td></tr>`).join('')}</tbody>
+        </table></div>
+        <button type="button" class="btn" id="btn-cal">Registrar nova calibração</button>
+      </article>
+    </section>
+    ${nota(' — os pinos GPIO e fatores de calibração dependem do módulo de hardware')}`;
 
-  startLive(rt => {
-    for (const [id, w] of Object.entries(rt.por_dispositivo)) {
-      const el = root.querySelector(`.device[data-id="${id}"] .pw`);
-      if (el) el.textContent = w ? `${nf(w)} W` : 'desligado';
-    }
+  root.querySelectorAll('[data-rename]').forEach(b => b.addEventListener('click', () => {
+    const d = disp.find(x => x.id === b.dataset.rename);
+    dialogo({
+      titulo: `Renomear ${d.canal}`,
+      campos: [{ name: 'nome', label: 'Nome do circuito', value: nomeDe(d) }],
+      onSubmit: v => { const n = Nomes.get(); n[d.id] = v.nome.trim() || d.nome; Nomes.set(n); render(); },
+    });
+  }));
+  $('#btn-add').addEventListener('click', () => {
+    const prox = disp.length + novos.length + 1;
+    dialogo({
+      titulo: 'Adicionar sensor',
+      descricao: 'Cadastre o sensor CT ligado ao ESP32.',
+      campos: [
+        { name: 'canal', label: 'Canal', value: `CT${prox}` },
+        { name: 'gpio', label: 'Pino GPIO do ESP32', type: 'number', min: 0, step: '1' },
+        { name: 'nome', label: 'Nome do circuito', placeholder: 'Ex.: Máquina de lavar' },
+      ],
+      enviar: 'Adicionar',
+      onSubmit: v => { SensoresNovos.set([...novos, v]); render(); },
+    });
+  });
+  $('#btn-cal').addEventListener('click', () => dialogo({
+    titulo: 'Registrar nova calibração',
+    descricao: 'Compare a leitura do sensor com um instrumento de referência ligado à mesma carga.',
+    campos: [
+      { name: 'canal', label: 'Sensor', options: sensoresCal.map(c => [c.canal, c.canal]), value: sensoresCal[0].canal },
+      { name: 'fator', label: 'Fator de calibração', type: 'number', step: 'any' },
+      { name: 'referencia', label: 'Instrumento de referência', value: 'Multímetro' },
+      { name: 'erro_pct', label: 'Erro medido (%)', type: 'number', step: '0.1', min: 0 },
+    ],
+    onSubmit: v => {
+      const c = Calibracoes.get();
+      c[v.canal] = { fator: v.fator, referencia: v.referencia, erro_pct: +v.erro_pct, data: new Date().toISOString().slice(0, 10) };
+      Calibracoes.set(c);
+      render();
+    },
+  }));
+
+  every(3000, async () => {
+    try {
+      const rt = await Api.get('tempoReal');
+      for (const [id, w] of Object.entries(rt.por_dispositivo)) {
+        const el = root.querySelector(`.device[data-id="${id}"] .pw`);
+        if (el) el.textContent = `${nf(w)} W`;
+      }
+    } catch { /* mantém o último valor */ }
   });
 }
 
-/* ---------- Previsão (machine learning) ---------- */
+/* ---------- Previsão de custo ---------- */
+
+let banhoMin = 2;
 
 async function viewPrevisao(root) {
-  const [prev, diario] = await Promise.all(['previsao', 'diario'].map(Api.get));
+  const [prev, diario, disp] = await Promise.all(['previsao', 'diario', 'dispositivos'].map(Api.get));
   const s = Settings.get(), preco = precoKwh(s);
   const n = prev.dias_no_mes;
   const real = Array(n + 1).fill(null), pv = Array(n + 1).fill(null), lo = Array(n + 1).fill(null), hi = Array(n + 1).fill(null);
   prev.real.forEach(p => { real[p.dia] = p.kwh_acumulado; });
   prev.previsto.forEach(p => { pv[p.dia] = p.kwh_acumulado; lo[p.dia] = p.min; hi[p.dia] = p.max; });
-
-  // Padrão semanal dos últimos 28 dias completos
-  const ult28 = diario.slice(-29, -1);
-  const semana = [1, 2, 3, 4, 5, 6, 0].map(w => {
-    const ds = ult28.filter(d => new Date(d.data + 'T12:00').getDay() === w);
-    return { w, kwh: ds.length ? sum(ds.map(d => d.total_kwh)) / ds.length : 0 };
-  });
-  const media = sum(semana.map(x => x.kwh)) / 7;
+  const hoje = prev.real[prev.real.length - 1];
+  const medidoAgora = sum(diario.filter(d => d.data.startsWith(prev.mes)).map(d => d.total_kwh));
+  const conta = prev.kwh_previsto * preco;
+  const folga = s.meta - conta;
+  const metaKwh = s.meta / preco;
+  const restantes = n - hoje.dia;
+  const temChuveiro = disp.some(d => d.id === 'chuveiro');
+  const chuvDia = mediaDiaria(diario, 'chuveiro');
+  const [y, m] = partes(prev.mes);
 
   root.innerHTML = `
-    ${head('Previsão de consumo', `Estimativa para ${mesLongo(prev.mes)}, atualizada a cada dia.`)}
-    <section class="tiles">
-      ${tile('Consumo previsto', `${nf(prev.kwh_previsto)} kWh`, `entre ${nf(prev.kwh_min)} e ${nf(prev.kwh_max)} kWh`)}
-      ${tile('Conta prevista', brl(prev.kwh_previsto * preco), `meta: ${brl(s.meta)}`)}
-      ${tile('Erro médio do modelo', prev.mae_kwh == null ? '—' : `${nf(prev.mae_kwh, 1)} kWh`, prev.mape == null ? 'sem meses suficientes para validar' : `MAE · ${pct(prev.mape)} do total do mês`)}
-      ${tile('Dias restantes', nf(n - prev.real[prev.real.length - 1].dia), `de ${n} dias no mês`)}
+    ${pageHead(`Fechamento previsto para ${dataBr(`${y}-${String(m).padStart(2, '0')}-${n}`)}`, 'Previsão de custo')}
+    <section class="tiles tiles-3">
+      ${tile({ cls: 'dark', label: 'Conta prevista', value: brl(conta), foot: `faixa provável ${brl(prev.kwh_min * preco)} – ${brl(prev.kwh_max * preco)}` })}
+      ${tile({ label: 'Consumo previsto', value: nf(prev.kwh_previsto), unit: 'kWh', foot: `${nf(medidoAgora, 1)} kWh medidos até agora` })}
+      ${tile({ label: `Situação da meta (${brl(s.meta)})`, value: `<span class="${folga >= 0 ? 'green' : 'red'}">${folga >= 0 ? 'Dentro' : 'Acima'}</span>`,
+        foot: folga >= 0 ? `folga prevista de ${brl(folga)}` : `excesso previsto de ${brl(-folga)}` })}
     </section>
 
     <article class="card">
-      <div class="card-head"><h2>Consumo acumulado no mês</h2><span class="muted">kWh</span></div>
+      <div class="card-head"><h2>Consumo acumulado no mês (kWh)</h2>
+        ${legenda([['line', 'var(--g-700)', 'Medido'], ['dashed', 'var(--orange)', 'Previsto'], ['band', 'var(--band)', 'Margem de erro'], ['line', 'var(--meta)', 'Meta']])}</div>
       <div id="ch-prev"></div>
     </article>
 
     <section class="grid-2">
       <article class="card">
-        <div class="card-head"><h2>Padrão por dia da semana</h2><span class="muted">média dos últimos 28 dias</span></div>
-        <div id="ch-sem"></div>
+        <div class="card-head"><h2>Simular economia</h2></div>
+        ${temChuveiro ? `
+          <p class="muted">Reduzir o tempo de cada banho em:</p>
+          <div class="choice" role="group" aria-label="Redução por banho">
+            ${[[0, 'Nada'], [2, '2 min'], [5, '5 min'], [8, '8 min']].map(([v, t]) => `<button type="button" data-min="${v}" aria-pressed="${v === banhoMin}">${t}</button>`).join('')}
+          </div>
+          <div class="minis" id="sim-out"></div>
+          <p class="footnote">Base: consumo médio do CT1 nas últimas 4 semanas e banho de ${BANHO_MIN} min em média.</p>`
+        : '<p class="muted">A simulação usa o sensor do chuveiro, que não está cadastrado.</p>'}
       </article>
-      <article class="card prose">
-        <h2>Como a previsão é feita</h2>
-        <p><b>Modelo atual:</b> ${esc(prev.modelo)}. Para cada dia que falta, o sistema usa o consumo médio daquele dia da semana nas últimas 4 semanas e soma ao que já foi medido.</p>
-        <p><b>Faixa de incerteza:</b> a área sombreada cobre cerca de 80% dos resultados prováveis e se estreita conforme o mês avança.</p>
-        <p><b>Validação:</b> o erro absoluto médio (MAE) é calculado prevendo os meses já fechados, a partir de cada dia, e comparando com o total realmente medido.</p>
-        <p class="note">Este é o modelo de referência (baseline). Modelos mais sofisticados, como redes LSTM, serão comparados com ele pela mesma métrica.</p>
+      <article class="card">
+        <div class="card-head"><h2>Sobre o modelo</h2></div>
+        <dl class="kv">
+          <div><dt>Algoritmo</dt><dd>${esc(prev.modelo)}</dd></div>
+          <div><dt>Dados de treino</dt><dd>Leituras do banco desde ${mesExtenso(prev.treino_desde.slice(0, 7)).replace(/^(\w{3})\w*/, '$1')}</dd></div>
+          <div><dt>Erro absoluto médio</dt><dd class="mono">${prev.mae_kwh != null ? `${nf(prev.mae_kwh, 1)} kWh` : '—'}</dd></div>
+          <div><dt>Último treino</dt><dd>${dataBr(prev.ultimo_treino)}</dd></div>
+          <div><dt>Variáveis</dt><dd>${esc(prev.variaveis)}</dd></div>
+        </dl>
+        <p class="infobox">A previsão é recalculada a cada novo lote de leituras enviado pelo ESP32.</p>
       </article>
-    </section>`;
+    </section>
+    ${nota(` — tarifa de ${brl(preco)}/kWh`)}`;
+
+  const ticks = [];
+  for (let d = 1; d <= n; d += 5) ticks.push(d);
+  if (ticks[ticks.length - 1] !== n) ticks.push(n);
 
   chart('prev', () => Charts.line($('#ch-prev'), {
-    ariaLabel: 'Consumo acumulado real e previsto no mês',
-    legend: [
-      { name: 'Medido', color: 'var(--s1)', kind: 'line' },
-      { name: 'Previsão', color: 'var(--s2)', kind: 'dashed' },
-      { name: 'Faixa provável (80%)', color: 'var(--s2)', kind: 'band' },
-    ],
-    labels: real.map((_, i) => (i ? String(i) : '')),
+    ariaLabel: 'Consumo acumulado medido e previsto no mês',
+    height: 320,
+    labels: real.map((_, i) => String(i)),
+    xTicks: ticks,
+    xTitle: 'Dia do mês',
     series: [
-      { name: 'Medido', color: 'var(--s1)', values: real },
-      { name: 'Previsão', color: 'var(--s2)', values: pv, dashed: true },
+      { color: 'var(--g-700)', values: real },
+      { color: 'var(--orange)', values: pv, dashed: true },
     ],
-    band: { lo, hi, color: 'var(--s2)' },
-    refLine: { value: s.meta / preco, label: `meta ≈ ${nf(s.meta / preco)} kWh` },
+    band: { lo, hi, color: 'var(--band)' },
+    refLine: { value: metaKwh, label: `Meta: ${nf(metaKwh)} kWh (${brl(s.meta)})`, color: 'var(--meta)' },
+    points: [
+      { i: hoje.dia, v: hoje.kwh_acumulado, color: 'var(--g-700)', label: `Até ontem · ${nf(hoje.kwh_acumulado, 1)}`, dx: 10, dy: 22 },
+      { i: n, v: prev.kwh_previsto, color: 'var(--orange)', label: `${nf(prev.kwh_previsto)} kWh`, dx: -10, dy: 26, anchor: 'end', labelColor: 'var(--orange)' },
+    ],
     yFormat: v => nf(v),
-    tip: i => `<div class="tt-title">${i ? `Dia ${i}` : 'Início do mês'}</div>
-      ${real[i] != null ? tipRow('var(--s1)', 'Medido', `${nf(real[i], 1)} kWh`) : ''}
-      ${pv[i] != null && real[i] == null ? tipRow('var(--s2)', 'Previsão', `${nf(pv[i], 1)} kWh`) : ''}
-      ${pv[i] != null && real[i] == null ? `<div class="tt-row"><span>Faixa</span><b>${nf(lo[i])}–${nf(hi[i])} kWh</b></div>` : ''}`,
+    tip: i => `<div class="tt-title">Dia ${i}</div>
+      ${real[i] != null ? tipRow('Medido', `${nf(real[i], 1)} kWh`, 'var(--g-700)') : ''}
+      ${pv[i] != null && i > hoje.dia ? tipRow('Previsto', `${nf(pv[i], 1)} kWh`, 'var(--orange)') : ''}
+      ${pv[i] != null && i > hoje.dia ? tipRow('Margem', `${nf(lo[i])}–${nf(hi[i])} kWh`) : ''}`,
   }));
 
-  chart('sem', () => Charts.bar($('#ch-sem'), {
-    ariaLabel: 'Consumo médio por dia da semana',
-    height: 220,
-    labels: semana.map(x => DIAS_SEMANA[x.w]),
-    series: [{ name: 'Média diária', color: 'var(--s1)', values: semana.map(x => x.kwh) }],
-    yFormat: v => nf(v),
-    tip: i => `<div class="tt-title">${DIAS_SEMANA[semana[i].w]}</div>
-      ${tipRow('var(--s1)', 'Média', `${nf(semana[i].kwh, 1)} kWh`)}
-      <div class="tt-row"><span>vs. média geral</span><b>${semana[i].kwh >= media ? '+' : ''}${pct(semana[i].kwh / media - 1, 0)}</b></div>`,
+  function simular() {
+    const out = $('#sim-out');
+    if (!out) return;
+    const econ = chuvDia * (banhoMin / BANHO_MIN) * restantes * preco;
+    out.innerHTML = mini('Economia no mês', brl(econ), 'good') + mini('Nova previsão', brl(conta - econ));
+  }
+  root.querySelectorAll('[data-min]').forEach(b => b.addEventListener('click', () => {
+    banhoMin = +b.dataset.min;
+    root.querySelectorAll('[data-min]').forEach(x => x.setAttribute('aria-pressed', x === b));
+    simular();
   }));
+  simular();
 }
 
-/* ---------- Antes x depois ---------- */
+/* ---------- Dispositivo ESP32 ---------- */
 
-async function viewComparacao(root) {
-  const mensal = await Api.get('mensal');
-  const preco = precoKwh();
-  const porMes = Object.fromEntries(mensal.map(m => [m.mes, m]));
-  const anoAnterior = k => { const [y, m] = k.split('-'); return `${+y - 1}-${m}`; };
-  const pos = mensal.filter(m => m.com_sistema && m.completo);
-  const pre3 = mensal.filter(m => !m.com_sistema && m.completo).slice(-3);
-
-  if (!pos.length) {
-    root.innerHTML = `${head('Antes × depois')}<article class="card"><p>Ainda não há meses completos com o sistema instalado. A comparação aparece ao fim do primeiro mês.</p></article>`;
-    return;
-  }
-
-  const rows = pos.map(m => ({ mes: m.mes, depois: m.kwh_sensores, antes: porMes[anoAnterior(m.mes)] && fatKwh(porMes[anoAnterior(m.mes)]) }));
-  const comp = rows.filter(r => r.antes);
-  const sA = sum(comp.map(r => r.antes)), sD = sum(comp.map(r => r.depois));
-  const reducao = sA ? 1 - sD / sA : 0;
-  const mediaPre = pre3.length ? sum(pre3.map(fatKwh)) / pre3.length : null;
-  const mediaPos = sum(pos.map(m => m.kwh_sensores)) / pos.length;
-  const anoRef = comp.length ? +comp[0].mes.slice(0, 4) - 1 : '';
+async function viewEsp32(root) {
+  const [esp, disp, h24] = await Promise.all(['esp32', 'dispositivos', 'ultimas24h'].map(Api.get));
+  const entrega = esp.pacotes_recebidos_24h / esp.pacotes_esperados_24h;
+  const seg = (Date.now() - new Date(esp.ligado_desde)) / 1000;
+  const ligado = `${Math.floor(seg / 86400)} d ${Math.floor((seg % 86400) / 3600)} h`;
+  const qualidade = esp.rssi_dbm >= -60 ? 'excelente' : esp.rssi_dbm >= -70 ? 'bom' : 'fraco';
 
   root.innerHTML = `
-    ${head('Antes × depois', 'O acompanhamento do consumo ajudou a economizar?')}
+    ${pageHead(`${esc(esp.id)} · firmware ${esc(esp.firmware)}`, 'Dispositivo ESP32')}
     <section class="tiles">
-      ${tile('Variação vs. ano anterior', `<span class="${reducao > 0 ? 'delta-good' : 'delta-bad'}">${reducao > 0 ? '▼' : '▲'} ${pct(Math.abs(reducao))}</span>`, `${comp.map(r => mesNome(r.mes)).join(' e ')}, comparado aos mesmos meses de ${anoRef}`)}
-      ${tile('Energia economizada', `${nf(sA - sD)} kWh`, `no período com o sistema`)}
-      ${tile('Economia estimada', brl((sA - sD) * preco), 'na tarifa atual')}
-      ${tile('Média mensal', `${nf(mediaPos)} kWh`, mediaPre ? `antes: ${nf(mediaPre)} kWh (3 meses anteriores)` : '')}
+      ${tile({ label: 'Status', value: `<span class="${esp.online ? 'green' : 'red'}">${esp.online ? 'Online' : 'Offline'}</span>`, foot: `última leitura às ${new Date(esp.ultima_leitura).toLocaleTimeString('pt-BR')}` })}
+      ${tile({ label: 'Sinal Wi-Fi', value: esp.rssi_dbm, unit: 'dBm', foot: `sinal ${qualidade}` })}
+      ${tile({ label: 'Ligado há', value: ligado, foot: 'desde a última reinicialização' })}
+      ${tile({ label: 'Entrega de pacotes (24 h)', value: pct(entrega), foot: `${nf(esp.pacotes_recebidos_24h)} de ${nf(esp.pacotes_esperados_24h)} recebidos` })}
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <div class="card-head"><h2>Últimas leituras recebidas</h2><span class="muted">a cada ${esp.intervalo_envio_s} s</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Horário</th>${disp.map(d => `<th>${d.canal}</th>`).join('')}<th>Total</th></tr></thead>
+          <tbody id="leituras"></tbody>
+        </table></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Configuração</h2></div>
+        <dl class="kv">
+          <div><dt>Endereço IP</dt><dd class="mono">${esc(esp.ip)}</dd></div>
+          <div><dt>Protocolo</dt><dd>${esc(esp.protocolo)}</dd></div>
+          <div><dt>Endpoint</dt><dd class="mono">${esc(esp.endpoint)}</dd></div>
+          <div><dt>Intervalo de envio</dt><dd>${esp.intervalo_envio_s} s</dd></div>
+          <div><dt>Sensores conectados</dt><dd>${disp.map(d => `${d.canal} (GPIO ${d.gpio})`).join(', ')}</dd></div>
+        </dl>
+      </article>
     </section>
 
     <article class="card">
-      <div class="card-head"><h2>Mesmo mês, antes e depois do sistema</h2><span class="muted">kWh</span></div>
-      <div id="ch-comp"></div>
-      <p class="note">Comparamos com o mesmo mês do ano anterior para reduzir o efeito do clima (uso de ar-condicionado e chuveiro muda ao longo do ano).</p>
+      <div class="card-head"><h2>Potência total nas últimas 24 horas (W)</h2>${legenda([['line', 'var(--g-700)', 'Média a cada 15 min']])}</div>
+      <div id="ch-24h"></div>
     </article>
+    ${nota()}`;
 
-    <article class="card">
-      <div class="card-head"><h2>Sensores × conta da concessionária</h2></div>
-      <p class="lead">Digite o consumo (kWh) que aparece na sua conta de luz para conferir a precisão do protótipo.</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Mês</th><th class="num">Sensores</th><th class="num">Conta de luz (kWh)</th><th class="num">Diferença</th></tr></thead>
-        <tbody>${pos.slice().reverse().map(m => `
-          <tr data-mes="${m.mes}">
-            <td>${mesLongo(m.mes)}</td>
-            <td class="num">${nf(m.kwh_sensores)} kWh</td>
-            <td class="num"><input type="number" min="0" step="1" inputmode="numeric" aria-label="Consumo da conta em ${mesLongo(m.mes)}" value="${fatKwh(m) ?? ''}"></td>
-            <td class="num dif"></td>
-          </tr>`).join('')}</tbody>
-      </table></div>
-    </article>`;
-
-  const atualizaDif = tr => {
-    const m = porMes[tr.dataset.mes];
-    const f = parseFloat(tr.querySelector('input').value);
-    tr.querySelector('.dif').textContent = f > 0 ? `${m.kwh_sensores >= f ? '+' : ''}${pct((m.kwh_sensores - f) / f)}` : '—';
-  };
-  root.querySelectorAll('tr[data-mes]').forEach(tr => {
-    atualizaDif(tr);
-    tr.querySelector('input').addEventListener('input', e => {
-      Faturas.set(tr.dataset.mes, e.target.value === '' ? null : parseFloat(e.target.value));
-      atualizaDif(tr);
-    });
-  });
-
-  chart('comp', () => Charts.bar($('#ch-comp'), {
-    ariaLabel: 'Consumo antes e depois do sistema',
-    legend: [
-      { name: `Ano anterior (conta de luz)`, color: 'var(--s2)' },
-      { name: 'Com o sistema (sensores)', color: 'var(--s1)' },
-    ],
-    labels: comp.map(r => MESES[r.mes.split('-')[1] - 1]),
-    series: [
-      { name: 'Ano anterior', color: 'var(--s2)', values: comp.map(r => r.antes) },
-      { name: 'Com o sistema', color: 'var(--s1)', values: comp.map(r => r.depois) },
-    ],
+  chart('24h', () => Charts.line($('#ch-24h'), {
+    ariaLabel: 'Potência total nas últimas 24 horas',
+    height: 240,
+    labels: h24.map(p => horaMin(p.timestamp)),
+    series: [{ color: 'var(--g-700)', values: h24.map(p => p.potencia_w) }],
     yFormat: v => nf(v),
-    tip: i => `<div class="tt-title">${MESES[comp[i].mes.split('-')[1] - 1]}</div>
-      ${tipRow('var(--s2)', mesCurto(anoAnterior(comp[i].mes)), `${nf(comp[i].antes)} kWh`)}
-      ${tipRow('var(--s1)', mesCurto(comp[i].mes), `${nf(comp[i].depois)} kWh`)}
-      <div class="tt-row"><span>Variação</span><b>${pct(comp[i].depois / comp[i].antes - 1)}</b></div>`,
+    tip: i => `<div class="tt-title">${horaMin(h24[i].timestamp)}</div>${tipRow('Potência', `${nf(h24[i].potencia_w)} W`)}`,
   }));
+
+  const linhas = [];
+  every(3000, async () => {
+    try {
+      const rt = await Api.get('tempoReal');
+      linhas.unshift(rt);
+      linhas.length = Math.min(linhas.length, 8);
+      const tb = $('#leituras');
+      if (tb) tb.innerHTML = linhas.map(l => `<tr><td class="mono">${new Date(l.timestamp).toLocaleTimeString('pt-BR')}</td>
+        ${disp.map(d => `<td class="mono">${nf(l.por_dispositivo[d.id] || 0)}</td>`).join('')}<td class="mono"><b>${nf(l.potencia_total_w)} W</b></td></tr>`).join('');
+    } catch { /* mantém as linhas */ }
+  });
 }
 
 /* ---------- Configurações ---------- */
 
 function viewConfiguracoes(root) {
-  const s = Settings.get();
+  const s = Settings.get(), ses = Sessao.get() || {};
   root.innerHTML = `
-    ${head('Configurações', 'Ficam salvas neste navegador.')}
+    ${pageHead('Preferências da residência', 'Configurações')}
     <form class="card form" id="form-cfg">
+      <fieldset>
+        <legend>Conta</legend>
+        <label>Seu nome<input name="nome" required value="${esc(ses.nome || '')}"></label>
+      </fieldset>
       <fieldset>
         <legend>Tarifa e meta</legend>
         <label>Tarifa de energia (R$/kWh, com impostos)
@@ -453,15 +751,16 @@ function viewConfiguracoes(root) {
         </label>
       </fieldset>
       <fieldset>
-        <legend>Conexão com o sistema</legend>
+        <legend>Conexão com o banco de dados</legend>
         <label>Endereço da API
           <input name="apiUrl" type="url" placeholder="https://seu-servidor.com" value="${esc(s.apiUrl)}">
           <small>Deixe em branco para usar o modo demonstração com dados simulados.</small>
         </label>
       </fieldset>
       <div class="form-actions">
-        <button type="submit" class="btn primary">Salvar</button>
+        <button type="submit" class="btn dark">Salvar</button>
         <button type="button" class="btn" id="btn-reset">Restaurar padrões</button>
+        <button type="button" class="btn" id="btn-sair">Sair</button>
         <span id="cfg-status" role="status" class="muted"></span>
       </div>
     </form>`;
@@ -471,98 +770,115 @@ function viewConfiguracoes(root) {
     e.preventDefault();
     const d = new FormData(form);
     Settings.set({ tarifa: +d.get('tarifa'), bandeira: d.get('bandeira'), meta: +d.get('meta'), apiUrl: d.get('apiUrl').trim() });
+    Sessao.set({ ...ses, nome: d.get('nome').trim() });
     $('#cfg-status').textContent = 'Configurações salvas.';
-    updateBanner();
+    updateSidebar();
   });
   $('#btn-reset').addEventListener('click', () => {
     Settings.set(Settings.PADRAO);
-    Faturas.clear();
+    [Faturas, Nomes, SensoresNovos, Calibracoes].forEach(x => x.clear());
     viewConfiguracoes(root);
     $('#cfg-status').textContent = 'Padrões restaurados.';
-    updateBanner();
+    updateSidebar();
   });
+  $('#btn-sair').addEventListener('click', () => { Sessao.clear(); location.hash = '#entrar'; });
 }
 
-/* ---------- Sobre ---------- */
+/* ---------- Entrar / cadastro ---------- */
 
-function viewSobre(root) {
+let authModo = 'entrar';
+
+function viewEntrar(root) {
+  const cad = authModo === 'cadastro';
   root.innerHTML = `
-    ${head('Sobre o projeto', 'Sistema Inteligente de Monitoramento do Consumo Energético Residencial')}
-    <article class="card prose">
-      <p>Grande parte dos consumidores só descobre quanto gastou de energia quando a conta chega. Este sistema mede o consumo da casa continuamente, guarda o histórico e mostra, mês a mês, quanto cada equipamento consome e quanto a conta deve custar — para que dê tempo de agir antes do fechamento da fatura.</p>
-    </article>
-
-    <article class="card">
-      <h2>Como funciona</h2>
-      <ol class="flow">
-        <li><b>Sensores CT + ESP32</b><span>Sensores de corrente não invasivos medem cada circuito; o ESP32 calcula corrente RMS e energia.</span></li>
-        <li><b>Comunicação segura</b><span>As leituras são enviadas via HTTP/REST ou MQTT.</span></li>
-        <li><b>Banco de dados</b><span>Armazena o histórico de leituras de forma consistente.</span></li>
-        <li><b>Machine learning</b><span>Reconhece padrões de uso e prevê consumo e custo do mês.</span></li>
-        <li><b>Este site</b><span>Mostra consumo, previsão, metas e o antes × depois.</span></li>
-      </ol>
-    </article>
-
-    <section class="grid-2">
-      <article class="card prose">
-        <h2>Objetivos específicos</h2>
-        <ol>
-          <li>Desenvolver o módulo de hardware (ESP32 + sensores CT).</li>
-          <li>Validar a comunicação segura entre o ESP32 e o banco de dados.</li>
-          <li>Modelar e implementar o banco de dados de leituras.</li>
-          <li>Implementar machine learning para padrões de consumo e previsão de custos.</li>
-          <li>Desenvolver o site de visualização do consumo mensal.</li>
-          <li>Comparar precisão e custo do protótipo com medidores comerciais.</li>
-          <li>Validar o sistema comparando o consumo antes e depois do uso.</li>
-        </ol>
-      </article>
-      <article class="card prose">
-        <h2>Equipe</h2>
-        <dl class="team">
-          <div><dt>Alunas</dt><dd>Amanda Ferreira Dahm<br>Dara Yuna Borges Fujii</dd></div>
-          <div><dt>Orientador</dt><dd>Prof. Anderson Jose Costa Sena</dd></div>
-          <div><dt>Frentes</dt><dd>Hardware e sensoriamento (Engenharia de Computação)<br>Site, banco de dados e machine learning (Ciência da Computação)</dd></div>
-          <div><dt>Instituição</dt><dd>IESB — Trabalho de Conclusão de Curso, 2026</dd></div>
-        </dl>
-      </article>
+    <section class="auth-hero">
+      <div class="brand"><span class="logo">${LOGO}</span><b>${NOME_SISTEMA}</b></div>
+      <div>
+        <h1>Saiba quanto sua casa consome antes da fatura chegar.</h1>
+        <p>Medição contínua por sensores no quadro elétrico, histórico mensal e previsão do valor da conta.</p>
+      </div>
+      <ul class="bullets"><li>Consumo por circuito</li><li>Previsão de custo</li><li>Metas mensais</li></ul>
+    </section>
+    <section class="auth-form">
+      <form id="form-auth" class="form">
+        <h2>${cad ? 'Cadastrar residência' : 'Entrar'}</h2>
+        <p class="muted">${cad ? 'Crie seu acesso e vincule o ESP32 instalado no quadro.' : 'Acesse o painel da sua residência.'}</p>
+        ${cad ? '<label>Nome<input name="nome" required autocomplete="name"></label>' : ''}
+        <label>E-mail<input name="email" type="email" required placeholder="nome@exemplo.com" autocomplete="email"></label>
+        <label><span class="label-row">Senha${cad ? '' : '<button type="button" class="link-btn" id="btn-esqueci">Esqueci a senha</button>'}</span>
+          <input name="senha" type="password" required autocomplete="${cad ? 'new-password' : 'current-password'}"></label>
+        ${cad ? '<label>Código do ESP32<input name="codigo" required placeholder="ESP32-01"></label>' : ''}
+        <p id="auth-msg" class="muted" role="status"></p>
+        <button type="submit" class="btn dark block">${cad ? 'Cadastrar' : 'Entrar'}</button>
+        <p class="auth-switch">${cad
+          ? 'Já tem acesso? <button type="button" class="link-btn" id="btn-modo">Entrar</button>'
+          : 'Primeiro acesso? <button type="button" class="link-btn" id="btn-modo">Cadastre sua residência e o código do ESP32</button>'}</p>
+        ${Api.demo() ? '<p class="footnote">Modo demonstração: qualquer e-mail e senha entram.</p>' : ''}
+      </form>
     </section>`;
+
+  $('#btn-modo').addEventListener('click', () => { authModo = cad ? 'entrar' : 'cadastro'; viewEntrar(root); });
+  $('#btn-esqueci')?.addEventListener('click', () => {
+    $('#auth-msg').textContent = 'A recuperação de senha ainda não está disponível no protótipo.';
+  });
+  $('#form-auth').addEventListener('submit', async e => {
+    e.preventDefault();
+    const dados = Object.fromEntries(new FormData(e.target));
+    try {
+      Sessao.set(await Api.post(cad ? 'cadastro' : 'login', dados));
+      location.hash = '#visao';
+    } catch (err) {
+      $('#auth-msg').textContent = err.message;
+    }
+  });
 }
 
 /* ---------- roteador ---------- */
 
+const LOGO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3 6 13.5h5.5L10.5 21 18 10h-5.5z"/></svg>';
+
 const ROTAS = {
-  painel: viewPainel,
+  visao: viewVisao,
   historico: viewHistorico,
   equipamentos: viewEquipamentos,
   previsao: viewPrevisao,
-  comparacao: viewComparacao,
+  esp32: viewEsp32,
   configuracoes: viewConfiguracoes,
-  sobre: viewSobre,
 };
 
-function updateBanner() {
-  $('#demo-banner').hidden = !Api.demo();
+function updateSidebar() {
+  $('#side-tarifa').textContent = `R$ ${nf(precoKwh(), 2)}/kWh`;
 }
 
 async function render() {
-  const id = ROTAS[location.hash.slice(1)] ? location.hash.slice(1) : 'painel';
+  let id = location.hash.slice(1);
   timers.forEach(clearInterval);
   timers = [];
   redraws = new Map();
+
+  if (id === 'entrar' || !Sessao.get()) {
+    if (id !== 'entrar') { location.replace('#entrar'); return; }
+    document.body.classList.add('auth');
+    viewEntrar($('#auth'));
+    return;
+  }
+  document.body.classList.remove('auth');
+  if (!ROTAS[id]) id = 'visao';
   document.querySelectorAll('.nav a').forEach(a => a.toggleAttribute('aria-current', a.getAttribute('href') === `#${id}`));
+  updateSidebar();
   const main = $('#main');
   main.innerHTML = '<p class="loading">Carregando…</p>';
   try {
     await ROTAS[id](main);
   } catch (err) {
-    main.innerHTML = `${head('Não foi possível carregar os dados')}
+    main.innerHTML = `${pageHead('Erro', 'Não foi possível carregar os dados')}
       <article class="card"><p>${esc(err.message)}</p>
-      <p class="note">Verifique o endereço da API em <a href="#configuracoes">Configurações</a> ou deixe-o em branco para usar o modo demonstração.</p></article>`;
+      <p class="muted">Verifique o endereço da API em <a href="#configuracoes">Configurações</a> ou deixe-o em branco para usar o modo demonstração.</p></article>`;
   }
   main.focus({ preventScroll: true });
   window.scrollTo(0, 0);
 }
 
+document.querySelectorAll('.brand-name').forEach(el => { el.textContent = NOME_SISTEMA; });
 window.addEventListener('hashchange', render);
-updateBanner();
 render();

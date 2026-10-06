@@ -1,7 +1,22 @@
 /*
- * Configurações do usuário e acesso aos dados.
+ * Dados guardados no navegador e acesso à API.
  * Sem URL de API configurada, o site roda em modo demonstração (js/mock.js).
  */
+function store(key, padrao) {
+  const copia = () => JSON.parse(JSON.stringify(padrao));
+  return {
+    get() {
+      try { return JSON.parse(localStorage.getItem(key)) ?? copia(); } catch { return copia(); }
+    },
+    set(v) {
+      try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* armazenamento indisponível */ }
+    },
+    clear() {
+      try { localStorage.removeItem(key); } catch { /* idem */ }
+    },
+  };
+}
+
 const BANDEIRAS = {
   verde:     { nome: 'Verde',                adicional: 0 },
   amarela:   { nome: 'Amarela',              adicional: 0.01885 },
@@ -10,55 +25,56 @@ const BANDEIRAS = {
 };
 
 const Settings = (() => {
-  const KEY = 'energia.config';
-  const PADRAO = { tarifa: 0.85, bandeira: 'verde', meta: 250, apiUrl: '' };
-  function get() {
-    try { return { ...PADRAO, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; }
-    catch { return { ...PADRAO }; }
-  }
-  function set(v) {
-    try { localStorage.setItem(KEY, JSON.stringify(v)); } catch { /* armazenamento indisponível */ }
-  }
-  return { get, set, PADRAO };
+  const s = store('energia.config', {});
+  const PADRAO = { tarifa: 0.89, bandeira: 'verde', meta: 250, apiUrl: '' };
+  return { get: () => ({ ...PADRAO, ...s.get() }), set: v => s.set(v), PADRAO };
 })();
 
-// Valores de fatura digitados pelo usuário (kWh por mês), sobrepõem os da API.
-const Faturas = (() => {
-  const KEY = 'energia.faturas';
-  function all() {
-    try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { return {}; }
-  }
-  function set(mes, kwh) {
-    const f = all();
-    if (kwh == null || isNaN(kwh)) delete f[mes]; else f[mes] = kwh;
-    try { localStorage.setItem(KEY, JSON.stringify(f)); } catch { /* idem */ }
-  }
-  function clear() {
-    try { localStorage.removeItem(KEY); } catch { /* idem */ }
-  }
-  return { all, set, clear };
-})();
+const Sessao = store('energia.sessao', null);         // { nome, email, token }
+const Faturas = store('energia.faturas', {});         // { 'AAAA-MM': kWh } digitados pelo usuário
+const Nomes = store('energia.nomes', {});             // { id_dispositivo: nome } renomeados
+const SensoresNovos = store('energia.sensores', []);  // sensores cadastrados aguardando leituras
+const Calibracoes = store('energia.calibracoes', {}); // { canal: { fator, erro_pct, data } }
 
 const precoKwh = (s = Settings.get()) => s.tarifa + (BANDEIRAS[s.bandeira] || BANDEIRAS.verde).adicional;
 
 const Api = (() => {
   const ROTAS = {
-    dispositivos: '/api/dispositivos',
-    tempoReal:    '/api/leituras/tempo-real',
-    ultimas24h:   '/api/leituras/24h',
-    diario:       '/api/consumo/diario',
-    mensal:       '/api/consumo/mensal',
-    previsao:     '/api/previsao/mes-atual',
+    dispositivos:  '/api/dispositivos',
+    tempoReal:     '/api/leituras/tempo-real',
+    ultimas24h:    '/api/leituras/24h',
+    diario:        '/api/consumo/diario',
+    mensal:        '/api/consumo/mensal',
+    perfilHorario: '/api/consumo/perfil-horario',
+    picos:         '/api/consumo/picos',
+    calibracao:    '/api/sensores/calibracao',
+    esp32:         '/api/esp32/status',
+    previsao:      '/api/previsao/mes-atual',
+    login:         '/api/auth/login',
+    cadastro:      '/api/auth/cadastro',
   };
   const baseUrl = () => (Settings.get().apiUrl || '').trim().replace(/\/+$/, '');
 
-  async function get(nome) {
-    const b = baseUrl();
-    if (!b) return Mock[nome]();
-    const res = await fetch(b + ROTAS[nome], { headers: { Accept: 'application/json' } });
+  async function req(nome, opts = {}) {
+    const token = Sessao.get()?.token;
+    const res = await fetch(baseUrl() + ROTAS[nome], {
+      ...opts,
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
     if (!res.ok) throw new Error(`Falha ao consultar ${ROTAS[nome]} (HTTP ${res.status})`);
     return res.json();
   }
 
-  return { get, ROTAS, demo: () => !baseUrl() };
+  async function get(nome) {
+    return baseUrl() ? req(nome) : Mock[nome]();
+  }
+
+  // login / cadastro: no modo demonstração qualquer e-mail entra.
+  async function post(nome, corpo) {
+    if (baseUrl()) return req(nome, { method: 'POST', body: JSON.stringify(corpo) });
+    const prefixo = corpo.email.split('@')[0].replace(/[._-]+/g, ' ');
+    return { nome: corpo.nome || prefixo.replace(/\b\w/g, c => c.toUpperCase()), email: corpo.email, token: null };
+  }
+
+  return { get, post, ROTAS, demo: () => !baseUrl() };
 })();
