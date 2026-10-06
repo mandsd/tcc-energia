@@ -563,24 +563,6 @@ async function render() {
   window.scrollTo(0, 0);
 }
 
-/* ---------- tema ---------- */
-
-const TEMAS = ['system', 'light', 'dark'];
-const TEMA_ROTULO = { system: 'Tema: automático', light: 'Tema: claro', dark: 'Tema: escuro' };
-function applyTheme(t) {
-  if (t === 'system') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.setAttribute('data-theme', t);
-  $('#theme-btn').textContent = TEMA_ROTULO[t];
-}
-let tema = 'system';
-try { tema = localStorage.getItem('energia.tema') || 'system'; } catch { /* sem armazenamento */ }
-applyTheme(tema);
-$('#theme-btn').addEventListener('click', () => {
-  tema = TEMAS[(TEMAS.indexOf(tema) + 1) % TEMAS.length];
-  try { localStorage.setItem('energia.tema', tema); } catch { /* idem */ }
-  applyTheme(tema);
-});
-
 window.addEventListener('hashchange', render);
 updateBanner();
 render();

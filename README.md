@@ -46,7 +46,7 @@ O formato exato de cada resposta está em `js/mock.js`: cada função ali devolv
 
 ```
 index.html       layout e navegação
-css/style.css    visual (tema claro/escuro automático)
+css/style.css    visual (cores do modelo IESB)
 js/mock.js       dados simulados + modelo de previsão de referência
 js/api.js        configurações e acesso à API / mock
 js/charts.js     gráficos SVG com tooltip
