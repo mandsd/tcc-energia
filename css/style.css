@@ -80,6 +80,13 @@ svg { flex: none; }
 .side-card span { font-size: 0.75rem; color: var(--side-muted); }
 .side-card b { font-size: 1rem; }
 .side-card a { color: var(--amber); font-size: 0.78rem; }
+.logout {
+  display: flex; align-items: center; gap: 10px; margin-top: -16px;
+  padding: 9px 12px; border: 0; border-radius: 8px; background: none; cursor: pointer;
+  font: inherit; color: var(--side-ink); opacity: 0.85; white-space: nowrap;
+}
+.logout:hover { background: var(--side-2); opacity: 1; }
+.logout svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 main { padding: 32px clamp(16px, 3vw, 36px) 48px; max-width: 1180px; width: 100%; }
 
 @media (max-width: 860px) {
@@ -93,6 +100,7 @@ main { padding: 32px clamp(16px, 3vw, 36px) 48px; max-width: 1180px; width: 100%
   .brand > span:last-child, .side-card { display: none; }
   .nav { flex-direction: row; }
   .nav a { padding: 7px 10px; }
+  .logout { margin: 0 0 0 auto; padding: 7px 10px; }
 }
 
 /* ---------- cabeçalho da página ---------- */

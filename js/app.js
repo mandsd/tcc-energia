@@ -880,5 +880,6 @@ async function render() {
 }
 
 document.querySelectorAll('.brand-name').forEach(el => { el.textContent = NOME_SISTEMA; });
+$('#btn-logout').addEventListener('click', () => { Sessao.clear(); location.hash = '#entrar'; });
 window.addEventListener('hashchange', render);
 render();
