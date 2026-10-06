@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Monitor de Energia Residencial</title>
+  <meta name="description" content="Acompanhe o consumo de energia da sua casa, por equipamento, com previsão da conta do mês.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232a78d6'/%3E%3Cpath d='M13 3 6 14h5l-1 7 7-11h-5z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <a class="brand" href="#painel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="6"/><path d="M13 3 6 14h5l-1 7 7-11h-5z"/></svg>
+        <span>Monitor de<br>Energia</span>
+      </a>
+      <nav class="nav" aria-label="Seções">
+        <a href="#painel">Painel</a>
+        <a href="#historico">Histórico mensal</a>
+        <a href="#equipamentos">Equipamentos</a>
+        <a href="#previsao">Previsão</a>
+        <a href="#comparacao">Antes × depois</a>
+        <a href="#configuracoes">Configurações</a>
+        <a href="#sobre">Sobre o projeto</a>
+      </nav>
+      <button type="button" class="theme-btn" id="theme-btn">Tema: automático</button>
+    </aside>
+
+    <div class="content">
+      <div class="banner" id="demo-banner" hidden>
+        <b>Modo demonstração.</b> Os dados são simulados enquanto o ESP32 não está conectado.
+        <a href="#configuracoes">Configurar API</a>
+      </div>
+      <main id="main" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <script src="js/mock.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
