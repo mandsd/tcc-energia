@@ -1,6 +1,6 @@
 /* Telas, roteamento por hash (#visao, #historico, ...) e atualização em tempo real. */
 
-const NOME_SISTEMA = '[NOME DO SISTEMA]';
+const NOME_SISTEMA = 'Consumo Energético Residencial';
 
 const $ = (s, r = document) => r.querySelector(s);
 const sum = a => a.reduce((s, v) => s + v, 0);

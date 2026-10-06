@@ -1,4 +1,4 @@
-# Monitoramento residencial de energia
+# Consumo Energético Residencial
 
 Site do TCC **Sistema Inteligente de Monitoramento do Consumo Energético Residencial** (IESB, 2026).
 
@@ -14,7 +14,7 @@ python -m http.server 8000
 
 e acesse http://localhost:8000.
 
-O nome do sistema ainda é um marcador (`[NOME DO SISTEMA]`). Para trocá-lo, altere `NOME_SISTEMA` no início de `js/app.js`.
+O nome do sistema fica em `NOME_SISTEMA`, no início de `js/app.js`.
 
 ## Telas
 
